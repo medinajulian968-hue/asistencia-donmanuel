@@ -322,57 +322,87 @@ def pagina_reporte():
         return
 
     hoy = db.ahora().date()
-    c1, c2, c3 = st.columns([1, 1, 1.3])
-    desde = c1.date_input("Desde", value=hoy.replace(day=1), format="DD/MM/YYYY")
-    hasta = c2.date_input("Hasta", value=hoy, format="DD/MM/YYYY")
+    c0, c1, c2 = st.columns([1.1, 1.2, 1.3])
+    modo = c0.selectbox("Período", [db.PERIODO_MES, db.PERIODO_QUINCENA, db.PERIODO_RANGO],
+                        format_func=lambda m: {"mes": "Mes", "quincena": "Quincena", "rango": "Rango de fechas"}[m])
+    if modo == db.PERIODO_MES:
+        ref = c1.date_input("Mes", value=hoy.replace(day=1), format="DD/MM/YYYY", help="Elige cualquier día del mes")
+        desde, hasta = db.rango_periodo(modo, ref)
+        titulo = f"Mes {desde:%m/%Y}"
+    elif modo == db.PERIODO_QUINCENA:
+        ref = c1.date_input("Mes", value=hoy.replace(day=1), format="DD/MM/YYYY", help="Elige cualquier día del mes")
+        q = c2.radio("Quincena", [1, 2], index=0 if hoy.day <= 15 else 1, horizontal=True,
+                     format_func=lambda k: "1ª (1–15)" if k == 1 else "2ª (16–fin)")
+        desde, hasta = db.rango_periodo(modo, ref, q)
+        titulo = f"{q}ª quincena {desde:%m/%Y}"
+    else:
+        desde = c1.date_input("Desde", value=hoy.replace(day=1), format="DD/MM/YYYY")
+        hasta = c2.date_input("Hasta", value=hoy, format="DD/MM/YYYY")
+        titulo = f"{desde:%d/%m/%Y} – {hasta:%d/%m/%Y}"
+
     empleados = db.listar_empleados(solo_activos=False)
     opciones = {"Todos": None} | {r.nombre: int(r.id) for r in empleados.itertuples()}
-    sel = c3.selectbox("Empleado", list(opciones))
+    sel = st.selectbox("Empleado", list(opciones))
     emp_id = opciones[sel]
 
     if desde > hasta:
         st.error("La fecha 'Desde' no puede ser mayor que 'Hasta'.")
         return
 
+    legal_min = db.jornada_legal_min(modo, desde, hasta)
+    tol = db.tolerancia_min()
+    st.caption(
+        f"**{titulo}** ({desde:%d/%m} – {hasta:%d/%m}) · Jornada legal del período: **{fmt_hm(legal_min)}** "
+        f"(base {db.horas_semana_legal():g} h/semana = {db.horas_mes_legal():g} h/mes, ajustable en Configuración). "
+        "Extra = horas trabajadas en el período − jornada legal."
+    )
+
     resumen = db.reporte_extras(desde, hasta, emp_id)
     registros = db.listar_registros(desde, hasta, emp_id)
 
     if resumen.empty:
-        st.info("No hay marcaciones en ese rango.")
+        st.info("No hay marcaciones en ese período.")
         return
+
+    totales = db.totales_periodo(resumen, legal_min, tol)
 
     # --- Totales -----------------------------------------------------------
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Días con marcación", len(resumen))
-    m2.metric("Horas trabajadas", fmt_hm(resumen["minutos_trabajados"].sum()))
-    m3.metric("Horas extra", fmt_hm(resumen["extra_total_min"].sum()))
-    m4.metric("Tardanzas", fmt_hm(resumen["tardanza_min"].sum()))
+    m2.metric("Horas trabajadas", fmt_hm(totales["trabajado_min"].sum()))
+    m3.metric("Horas extra del período", fmt_hm(totales["extra_min"].sum()))
+    m4.metric("Tardanzas", fmt_hm(totales["tardanza_min"].sum()))
 
     st.download_button(
         "⬇️ Descargar Excel",
-        data=db.exportar_excel(resumen, registros),
+        data=db.exportar_excel(resumen, registros, totales, titulo),
         file_name=f"extras_{desde:%Y%m%d}_{hasta:%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
 
-    # --- Totales por empleado ------------------------------------------------
-    st.subheader("Totales por empleado")
-    tot = resumen.groupby("nombre", as_index=False).agg(
-        dias=("fecha", "count"),
-        trabajado=("minutos_trabajados", "sum"),
-        tardanza=("tardanza_min", "sum"),
-        extra=("extra_total_min", "sum"),
-    )
+    # --- Liquidacion por empleado ---------------------------------------------
+    st.subheader("Liquidación del período por empleado")
     tot_vista = pd.DataFrame({
-        "Empleado": tot["nombre"],
-        "Días": tot["dias"],
-        "Horas trabajadas": tot["trabajado"].map(fmt_hm),
-        "Tardanza": tot["tardanza"].map(fmt_hm),
-        "Horas extra": tot["extra"].map(fmt_hm),
-        "Extra (min)": tot["extra"],
+        "Empleado": totales["nombre"],
+        "Días": totales["dias"],
+        "Horas trabajadas": totales["trabajado_min"].map(fmt_hm),
+        "Jornada legal": totales["legal_min"].map(fmt_hm),
+        "Horas extra": totales["extra_min"].map(fmt_hm),
+        "Extra (min)": totales["extra_min"],
+        "Faltante": totales["faltante_min"].map(fmt_hm),
+        "Tardanza": totales["tardanza_min"].map(fmt_hm),
     })
     st.dataframe(tot_vista, hide_index=True, width="stretch")
+
+    # --- Horas por semana -------------------------------------------------------
+    st.subheader("Horas trabajadas por semana")
+    st.caption(f"Referencia: {db.horas_semana_legal():g} h por semana. Las semanas se identifican por su lunes.")
+    sem = db.horas_por_semana(resumen)
+    sem_vista = sem.copy()
+    for c in sem_vista.columns[1:]:
+        sem_vista[c] = sem_vista[c].map(fmt_hm)
+    st.dataframe(sem_vista, hide_index=True, width="stretch")
 
     # --- Detalle por dia ------------------------------------------------------
     st.subheader("Detalle por día")
@@ -388,9 +418,11 @@ def pagina_reporte():
         "Trabajado": resumen["minutos_trabajados"].map(fmt_hm),
         "Tardanza": resumen["tardanza_min"].map(fmt_hm),
         "Faltante": resumen["faltante_min"].map(fmt_hm),
-        "Extra": resumen["extra_total_min"].map(fmt_hm),
+        "Sobre horario": resumen["extra_total_min"].map(fmt_hm),
         "Observación": resumen["observacion"],
     })
+    st.caption("Referencia diaria: *Sobre horario* es lo trabajado por encima del horario de ese día. "
+               "Las horas extra oficiales son las de la liquidación del período.")
     st.dataframe(det, hide_index=True, width="stretch")
 
     # --- Fotos -----------------------------------------------------------------
@@ -796,9 +828,21 @@ def admin_config():
             "Contar como extra el tiempo ANTES de la hora de entrada", value=db.contar_entrada_anticipada(),
             help="Si está desmarcado, solo cuenta el tiempo después de la hora de salida programada.",
         )
+        c1, c2 = st.columns(2)
+        h_sem = c1.number_input(
+            "Jornada legal semanal (horas)", min_value=1.0, max_value=60.0, value=float(db.horas_semana_legal()),
+            step=0.5, help="Colombia: 42 h desde el 15 de julio de 2026 (Ley 2101 de 2021).",
+        )
+        h_mes = c2.number_input(
+            "Jornada mensual para liquidar (horas)", min_value=1.0, max_value=300.0, value=float(db.horas_mes_legal()),
+            step=1.0, help="Convención de nómina: semanal × 5 (mes de 30 días). 42 h/semana → 210 h/mes. "
+                           "Quincena = la mitad. Las horas extra del período = trabajadas − esta jornada.",
+        )
         if st.form_submit_button("Guardar reglas", width="stretch"):
             db.set_config("tolerancia_min", int(tol))
             db.set_config("contar_entrada_anticipada", "1" if antes else "0")
+            db.set_config("horas_semana_legal", f"{h_sem:g}")
+            db.set_config("horas_mes_legal", f"{h_mes:g}")
             st.success("Reglas guardadas.")
 
     st.subheader("Contraseña de administrador")

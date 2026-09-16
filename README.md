@@ -43,27 +43,38 @@ En el celular conviene guardar la dirección en la pantalla de inicio
 
 ## Reglas de cálculo de extras
 
+**Las horas extra se liquidan por período (mes o quincena), no día a día:**
+
+- **Extra del período = horas trabajadas en el período − jornada legal del período.**
+- Jornada legal: 42 h/semana (Colombia, Ley 2101 de 2021) → **210 h/mes** con la
+  convención de nómina (mes de 30 días = 5 semanas). Quincena = 105 h. Un rango de
+  fechas cualquiera se prorratea (210 × días / 30). Ambos valores se ajustan en
+  *Configuración*.
+- Así, una semana de 48 h y otra de 36 h se compensan dentro del mes.
+- Si trabajó menos que la jornada legal, aparece como **Faltante**.
+
+Cómo se cuentan las horas trabajadas:
+
 - Cada persona marca **entrada** y **salida** cada vez que llega o se va. En turno
   partido son 4 marcaciones (entrada, salida al descanso, entrada, salida final).
 - La app empareja cada entrada con su salida en **bloques** y suma solo lo
   trabajado; los descansos no cuentan.
-- La **jornada** del día es la suma de sus bloques programados (ej. 8–12 y 14–21 = 11h).
-- La **tardanza** se calcula por bloque: la entrada real de cada bloque contra la
-  hora programada de ese bloque.
-- **Extra** = horas trabajadas − jornada (si supera la tolerancia).
-- **Faltante** = jornada − horas trabajadas, cuando el día quedó completo pero corto.
-- **Tardanza** = minutos entre la hora de entrada programada y la primera entrada real.
+- Por defecto el tiempo **antes** de la hora de entrada programada no cuenta como
+  trabajado (se puede activar en Configuración).
+- **Tardanza** = minutos entre la hora de entrada programada de cada bloque y la
+  entrada real (con tolerancia).
 - **Tolerancia**: si la diferencia no supera los minutos de tolerancia, no cuenta.
-  Si la supera, cuentan todos los minutos.
-- Por defecto el tiempo **antes** de la hora de entrada no cuenta como trabajado
-  (se puede activar en Configuración).
-- **Día no programado** (ej. domingo sin horario): todo el tiempo trabajado es extra.
+
+El detalle por día muestra además *Sobre horario* (lo trabajado por encima del
+horario de ese día) como referencia; no es la cifra oficial de extras.
 
 ## Reporte
 
-**Reporte de extras** (requiere contraseña de administrador): rango de fechas,
-totales por empleado, detalle por día, fotos de cada marcación y descarga a Excel
-con tres hojas (resumen por día, totales por empleado, marcaciones).
+**Reporte de extras** (requiere contraseña de administrador): elige **Mes**,
+**Quincena** o **Rango**; liquidación del período por empleado (trabajadas, jornada
+legal, extra, faltante, tardanzas), horas por semana, detalle por día, fotos de
+cada marcación y descarga a Excel (resumen por día, liquidación del período,
+marcaciones).
 
 ## Correcciones
 

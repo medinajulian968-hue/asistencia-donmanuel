@@ -47,6 +47,8 @@ CONFIG_DEFAULT = {
     "admin_password": hashlib.sha256(b"admin").hexdigest(),
     "tolerancia_min": "10",            # minutos de gracia antes de contar extra/tardanza
     "contar_entrada_anticipada": "0",  # 1 = llegar antes de la hora tambien suma extra
+    "horas_semana_legal": "42",        # jornada maxima legal semanal (Colombia: 42 h desde jul-2026)
+    "horas_mes_legal": "210",          # equivalente mensual usado en nomina (42 x 5 semanas de 30 dias)
 }
 
 
@@ -158,6 +160,21 @@ def tolerancia_min() -> int:
 
 def contar_entrada_anticipada() -> bool:
     return get_config("contar_entrada_anticipada") == "1"
+
+
+def _config_float(clave: str) -> float:
+    try:
+        return float(get_config(clave))
+    except ValueError:
+        return float(CONFIG_DEFAULT[clave])
+
+
+def horas_semana_legal() -> float:
+    return _config_float("horas_semana_legal")
+
+
+def horas_mes_legal() -> float:
+    return _config_float("horas_mes_legal")
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +724,71 @@ def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None) -> 
     return df
 
 
+# ---------------------------------------------------------------------------
+# LIQUIDACION POR PERIODO (mes / quincena / rango)
+# ---------------------------------------------------------------------------
+
+PERIODO_MES = "mes"
+PERIODO_QUINCENA = "quincena"
+PERIODO_RANGO = "rango"
+
+
+def rango_periodo(modo: str, ref: date, quincena: int = 1) -> tuple[date, date]:
+    """Fechas (desde, hasta) del mes o la quincena que contiene a `ref`."""
+    primero = ref.replace(day=1)
+    ultimo = (primero + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    if modo == PERIODO_QUINCENA:
+        return (primero, primero.replace(day=15)) if quincena == 1 else (primero.replace(day=16), ultimo)
+    return primero, ultimo
+
+
+def jornada_legal_min(modo: str, desde: date, hasta: date) -> int:
+    """
+    Minutos de jornada ordinaria del periodo, con la convencion de nomina
+    (mes de 30 dias): mes completo = horas_mes; quincena = la mitad; otro
+    rango = horas_mes x dias / 30.
+    """
+    mes = horas_mes_legal() * 60
+    if modo == PERIODO_MES:
+        return int(round(mes))
+    if modo == PERIODO_QUINCENA:
+        return int(round(mes / 2))
+    dias = (hasta - desde).days + 1
+    return int(round(mes * dias / 30))
+
+
+def totales_periodo(resumen: pd.DataFrame, legal_min: int, tolerancia: int) -> pd.DataFrame:
+    """
+    Un renglon por empleado: horas trabajadas en el periodo vs jornada legal.
+    Extra = trabajado - legal (si supera la tolerancia); faltante = lo contrario.
+    """
+    if resumen.empty:
+        return pd.DataFrame()
+    tot = resumen.groupby(["empleado_id", "nombre"], as_index=False).agg(
+        dias=("fecha", "count"),
+        trabajado_min=("minutos_trabajados", "sum"),
+        tardanza_min=("tardanza_min", "sum"),
+        sobre_horario_min=("extra_total_min", "sum"),
+    )
+    tot["legal_min"] = legal_min
+    dif = tot["trabajado_min"] - legal_min
+    tot["extra_min"] = dif.where(dif > tolerancia, 0).clip(lower=0).astype(int)
+    tot["faltante_min"] = (-dif).where(-dif > tolerancia, 0).clip(lower=0).astype(int)
+    return tot
+
+
+def horas_por_semana(resumen: pd.DataFrame) -> pd.DataFrame:
+    """Tabla empleado x semana (lunes de cada semana) con minutos trabajados."""
+    if resumen.empty:
+        return pd.DataFrame()
+    df = resumen[["nombre", "fecha", "minutos_trabajados"]].copy()
+    df["semana"] = pd.to_datetime(df["fecha"]).map(lambda d: lunes_de(d.date()))
+    piv = df.pivot_table(index="nombre", columns="semana", values="minutos_trabajados", aggfunc="sum", fill_value=0)
+    piv = piv.reindex(sorted(piv.columns), axis=1)
+    piv.columns = [f"Sem {c:%d/%m}" for c in piv.columns]
+    return piv.reset_index().rename(columns={"nombre": "Empleado"})
+
+
 def fmt_hm(minutos) -> str:
     """90 -> '1h 30m'"""
     if minutos is None or pd.isna(minutos):
@@ -718,7 +800,8 @@ def fmt_hm(minutos) -> str:
     return f"{h}h {m:02d}m" if h else f"{m}m"
 
 
-def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame) -> bytes:
+def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame,
+                   df_totales: pd.DataFrame | None = None, titulo_periodo: str = "") -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         if not df_resumen.empty:
@@ -739,19 +822,23 @@ def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame) -> byte
                 "entrada_real": "Entrada real", "salida_real": "Salida real",
                 "horas_trabajadas": "Horas trabajadas", "tardanza_min": "Tardanza (min)",
                 "horas_jornada": "Jornada (h)", "bloques": "Bloques", "faltante_min": "Faltante (min)",
-                "extra_total_min": "Extra total (min)", "horas_extra": "Horas extra", "observacion": "Observación",
+                "extra_total_min": "Sobre horario (min)", "horas_extra": "Sobre horario (h)", "observacion": "Observación",
             }).to_excel(xw, sheet_name="Resumen por día", index=False)
 
-            tot = (
-                res.groupby("nombre", as_index=False)
-                .agg(dias=("fecha", "count"), horas_trabajadas=("horas_trabajadas", "sum"),
-                     tardanza_min=("tardanza_min", "sum"), extra_total_min=("extra_total_min", "sum"))
-            )
-            tot["horas_extra"] = (tot["extra_total_min"] / 60).round(2)
-            tot.rename(columns={
-                "nombre": "Empleado", "dias": "Días", "horas_trabajadas": "Horas trabajadas",
-                "tardanza_min": "Tardanza (min)", "extra_total_min": "Extra total (min)", "horas_extra": "Horas extra",
-            }).to_excel(xw, sheet_name="Totales por empleado", index=False)
+            if df_totales is not None and not df_totales.empty:
+                tot = pd.DataFrame({
+                    "Empleado": df_totales["nombre"],
+                    "Período": titulo_periodo,
+                    "Días con marcación": df_totales["dias"],
+                    "Horas trabajadas": (df_totales["trabajado_min"] / 60).round(2),
+                    "Jornada legal (h)": (df_totales["legal_min"] / 60).round(2),
+                    "Horas extra": (df_totales["extra_min"] / 60).round(2),
+                    "Extra (min)": df_totales["extra_min"],
+                    "Faltante (h)": (df_totales["faltante_min"] / 60).round(2),
+                    "Tardanza (min)": df_totales["tardanza_min"],
+                    "Sobre horario diario (h)": (df_totales["sobre_horario_min"] / 60).round(2),
+                })
+                tot.to_excel(xw, sheet_name="Liquidación del período", index=False)
 
         if not df_registros.empty:
             reg = df_registros[["nombre", "tipo", "fecha", "fecha_hora", "foto", "nota"]].copy()
