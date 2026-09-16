@@ -30,6 +30,7 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -71,13 +72,19 @@ def _secreto(nombre: str, defecto: str = "") -> str:
 
 @lru_cache(maxsize=1)
 def cliente() -> Client:
-    url = _secreto("SUPABASE_URL")
-    key = _secreto("SUPABASE_KEY")
+    url = _secreto("SUPABASE_URL").strip().strip("<>\"' ")
+    key = _secreto("SUPABASE_KEY").strip().strip("<>\"' ")
     if not url or not key:
         raise ConfiguracionFaltante(
             "Faltan SUPABASE_URL y SUPABASE_KEY. Ponlos en los Secrets de Streamlit Cloud "
             "o en el archivo .streamlit/secrets.toml (ver DESPLIEGUE.md)."
         )
+    # Solo se necesita https://xxxx.supabase.co ; si pegaron la URL con
+    # /rest/v1 u otra ruta al final, se recorta.
+    if not url.startswith("http"):
+        url = "https://" + url
+    partes = urlsplit(url)
+    url = f"{partes.scheme}://{partes.netloc}"
     return create_client(url, key)
 
 
