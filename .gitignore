@@ -1,0 +1,6 @@
+# Secretos y datos locales: NUNCA subir a GitHub
+.streamlit/secrets.toml
+asistencia.db
+fotos/
+__pycache__/
+*.pyc
