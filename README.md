@@ -14,11 +14,22 @@ Corre en **Streamlit Community Cloud** y guarda los datos y fotos en **Supabase*
    *Configuración*).
 2. **Empleados**: crea a cada compañero. El PIN es opcional pero recomendado para
    que nadie marque por otro.
-3. **Horarios**: para cada persona marca los días que trabaja con hora de entrada y
-   salida. Hay un *relleno rápido* (ej. Lun–Vie 8:00–17:00) y se puede copiar el
-   horario de otro compañero.
-4. **Configuración**: tolerancia en minutos y si el tiempo antes de la entrada
-   cuenta como extra.
+3. **Horario base**: para cada persona, el horario que se repite cada semana. Cada
+   día puede tener **un bloque** (turno corrido, ej. 7:00–15:00) o **dos bloques**
+   (turno partido, ej. 8:00–12:00 y 14:00–21:00). Hay un *relleno rápido* y se
+   puede copiar el horario de otro compañero.
+4. **Programar semana**: cuando una semana concreta es distinta del horario base
+   (turnos partidos ocasionales, cambio de día libre…), se programa ahí por fechas.
+   Los días que no se programen siguen el horario base. Botones para copiar la
+   semana anterior o volver al horario base.
+5. **Configuración**: tolerancia en minutos y si el tiempo antes de la entrada
+   cuenta como trabajado.
+
+## Horario semanal (para los empleados)
+
+- En **Registrar**, al elegir su nombre, cada uno ve **Mi horario de esta semana**
+  (y la próxima).
+- La página **Horario semanal** muestra el cuadro completo de todos, por semana.
 
 ## Registro diario
 
@@ -36,8 +47,9 @@ En el celular conviene guardar la dirección en la pantalla de inicio
   partido son 4 marcaciones (entrada, salida al descanso, entrada, salida final).
 - La app empareja cada entrada con su salida en **bloques** y suma solo lo
   trabajado; los descansos no cuentan.
-- Cada día del horario tiene hora de entrada, hora normal de salida y **horas de
-  jornada** (ej. 8h). No importa cómo se reparta el día.
+- La **jornada** del día es la suma de sus bloques programados (ej. 8–12 y 14–21 = 11h).
+- La **tardanza** se calcula por bloque: la entrada real de cada bloque contra la
+  hora programada de ese bloque.
 - **Extra** = horas trabajadas − jornada (si supera la tolerancia).
 - **Faltante** = jornada − horas trabajadas, cuando el día quedó completo pero corto.
 - **Tardanza** = minutos entre la hora de entrada programada y la primera entrada real.

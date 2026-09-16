@@ -226,16 +226,33 @@ def verificar_pin(empleado_id: int, pin: str) -> bool:
 # HORARIOS
 # ---------------------------------------------------------------------------
 
+Bloque = tuple[time, time]
+
+
 @dataclass
 class Horario:
-    dia_semana: int
-    hora_entrada: time
-    hora_salida: time
-    jornada_min: int  # minutos que debe trabajar ese dia (sin contar descansos)
+    """Lo que debe trabajar una persona un dia: 1 o 2 bloques (turno partido)."""
+    bloques: list[Bloque]
+    origen: str = "plantilla"  # "plantilla" (dia de la semana) o "turno" (fecha programada)
 
     @property
-    def cruza_medianoche(self) -> bool:
-        return self.hora_salida <= self.hora_entrada
+    def hora_entrada(self) -> time:
+        return self.bloques[0][0]
+
+    @property
+    def hora_salida(self) -> time:
+        return self.bloques[-1][1]
+
+    @property
+    def jornada_min(self) -> int:
+        return sum(duracion_min(e, s_) for e, s_ in self.bloques)
+
+    @property
+    def partido(self) -> bool:
+        return len(self.bloques) > 1
+
+    def texto(self) -> str:
+        return " y ".join(f"{e.strftime('%H:%M')}–{s_.strftime('%H:%M')}" for e, s_ in self.bloques)
 
 
 def duracion_min(entrada: time, salida: time) -> int:
@@ -245,41 +262,154 @@ def duracion_min(entrada: time, salida: time) -> int:
     return s_ - e if s_ > e else s_ + 24 * 60 - e
 
 
+def _bloques_de_fila(f: dict) -> list[Bloque]:
+    bloques = []
+    if f.get("hora_entrada") and f.get("hora_salida"):
+        bloques.append((_parse_hora(f["hora_entrada"]), _parse_hora(f["hora_salida"])))
+    if f.get("hora_entrada2") and f.get("hora_salida2"):
+        bloques.append((_parse_hora(f["hora_entrada2"]), _parse_hora(f["hora_salida2"])))
+    return bloques
+
+
+def _fila_de_bloques(bloques: list[Bloque]) -> dict:
+    b1 = bloques[0] if bloques else None
+    b2 = bloques[1] if len(bloques) > 1 else None
+    return {
+        "hora_entrada": b1[0].strftime("%H:%M") if b1 else None,
+        "hora_salida": b1[1].strftime("%H:%M") if b1 else None,
+        "hora_entrada2": b2[0].strftime("%H:%M") if b2 else None,
+        "hora_salida2": b2[1].strftime("%H:%M") if b2 else None,
+    }
+
+
+def limpiar_bloques(bloques) -> list[Bloque]:
+    """Quita bloques incompletos y los ordena por hora de inicio."""
+    out = [(e, s_) for e, s_ in bloques if e is not None and s_ is not None and e != s_]
+    return sorted(out, key=lambda b: (b[0].hour, b[0].minute))[:2]
+
+
+# --- Plantilla por dia de la semana ----------------------------------------
+
 def horario_empleado(empleado_id: int) -> dict[int, Horario]:
-    """Devuelve {dia_semana: Horario} solo para los dias que trabaja."""
+    """Plantilla: {dia_semana: Horario} solo para los dias que trabaja."""
     data = (
-        cliente().table("horarios").select("dia_semana,hora_entrada,hora_salida,jornada_min")
+        cliente().table("horarios").select("dia_semana,hora_entrada,hora_salida,hora_entrada2,hora_salida2")
         .eq("empleado_id", empleado_id).execute().data
     )
     out = {}
     for f in data:
-        ent, sal = _parse_hora(f["hora_entrada"]), _parse_hora(f["hora_salida"])
-        jor = f.get("jornada_min") or duracion_min(ent, sal)
-        out[f["dia_semana"]] = Horario(f["dia_semana"], ent, sal, int(jor))
+        b = _bloques_de_fila(f)
+        if b:
+            out[f["dia_semana"]] = Horario(b, "plantilla")
     return out
 
 
-def guardar_horario(empleado_id: int, dias: dict[int, tuple[time, time, int] | None]) -> None:
-    """dias = {dia_semana: (entrada, salida, jornada_min)} o None si ese dia no trabaja."""
+def guardar_horario(empleado_id: int, dias: dict[int, list[Bloque] | None]) -> None:
+    """dias = {dia_semana: [bloques]} o None/[] si ese dia no trabaja."""
     sb = cliente()
     sb.table("horarios").delete().eq("empleado_id", empleado_id).execute()
     filas = []
-    for dia, valor in dias.items():
-        if valor is None:
+    for dia, bloques in dias.items():
+        bloques = limpiar_bloques(bloques or [])
+        if not bloques:
             continue
-        ent, sal, jor = valor
-        filas.append({
-            "empleado_id": empleado_id, "dia_semana": dia,
-            "hora_entrada": ent.strftime("%H:%M"), "hora_salida": sal.strftime("%H:%M"),
-            "jornada_min": int(jor) if jor else duracion_min(ent, sal),
-        })
+        fila = _fila_de_bloques(bloques)
+        fila["jornada_min"] = Horario(bloques).jornada_min
+        filas.append({"empleado_id": empleado_id, "dia_semana": dia, **fila})
     if filas:
         sb.table("horarios").insert(filas).execute()
 
 
 def copiar_horario(origen_id: int, destino_id: int) -> None:
     hor = horario_empleado(origen_id)
-    guardar_horario(destino_id, {d: (h.hora_entrada, h.hora_salida, h.jornada_min) for d, h in hor.items()})
+    guardar_horario(destino_id, {d: h.bloques for d, h in hor.items()})
+
+
+# --- Turnos programados por fecha -------------------------------------------
+
+def lunes_de(fecha: date) -> date:
+    return fecha - timedelta(days=fecha.weekday())
+
+
+def turnos_rango(desde: date, hasta: date, empleado_id: int | None = None) -> dict[tuple[int, date], Horario | None]:
+    """
+    Turnos programados por fecha: {(empleado_id, fecha): Horario} o None si ese
+    dia se marco explicitamente como libre.
+    """
+    q = (
+        cliente().table("turnos").select("*")
+        .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
+    )
+    if empleado_id is not None:
+        q = q.eq("empleado_id", empleado_id)
+    out = {}
+    for f in q.execute().data:
+        b = _bloques_de_fila(f)
+        out[(int(f["empleado_id"]), date.fromisoformat(f["fecha"]))] = Horario(b, "turno") if b and not f.get("libre") else None
+    return out
+
+
+def guardar_turno(empleado_id: int, fecha: date, bloques: list[Bloque] | None) -> None:
+    """bloques=None o [] -> dia libre programado."""
+    bloques = limpiar_bloques(bloques or [])
+    fila = {"empleado_id": empleado_id, "fecha": fecha.strftime("%Y-%m-%d"), "libre": not bloques,
+            **_fila_de_bloques(bloques)}
+    cliente().table("turnos").upsert(fila, on_conflict="empleado_id,fecha").execute()
+
+
+def guardar_semana(empleado_id: int, lunes: date, dias: dict[date, list[Bloque] | None]) -> None:
+    filas = []
+    for fecha, bloques in dias.items():
+        bloques = limpiar_bloques(bloques or [])
+        filas.append({"empleado_id": empleado_id, "fecha": fecha.strftime("%Y-%m-%d"), "libre": not bloques,
+                      **_fila_de_bloques(bloques)})
+    if filas:
+        cliente().table("turnos").upsert(filas, on_conflict="empleado_id,fecha").execute()
+
+
+def borrar_semana(empleado_id: int, lunes: date) -> None:
+    """Quita la programacion de esa semana: vuelve a regir la plantilla."""
+    domingo = lunes + timedelta(days=6)
+    (cliente().table("turnos").delete().eq("empleado_id", empleado_id)
+     .gte("fecha", lunes.strftime("%Y-%m-%d")).lte("fecha", domingo.strftime("%Y-%m-%d")).execute())
+
+
+def horario_del_dia(empleado_id: int, fecha: date, plantilla: dict[int, Horario] | None = None,
+                    turnos: dict | None = None) -> Horario | None:
+    """Turno programado para esa fecha si existe; si no, la plantilla del dia de la semana."""
+    if turnos is None:
+        turnos = turnos_rango(fecha, fecha, empleado_id)
+    clave = (empleado_id, fecha)
+    if clave in turnos:
+        return turnos[clave]
+    if plantilla is None:
+        plantilla = horario_empleado(empleado_id)
+    return plantilla.get(fecha.weekday())
+
+
+def semana_empleado(empleado_id: int, lunes: date, plantilla=None, turnos=None) -> list[tuple[date, Horario | None]]:
+    """Los 7 dias de la semana con el horario que rige cada uno."""
+    if turnos is None:
+        turnos = turnos_rango(lunes, lunes + timedelta(days=6), empleado_id)
+    if plantilla is None:
+        plantilla = horario_empleado(empleado_id)
+    return [(lunes + timedelta(days=i), horario_del_dia(empleado_id, lunes + timedelta(days=i), plantilla, turnos))
+            for i in range(7)]
+
+
+def semana_todos(lunes: date) -> pd.DataFrame:
+    """Tabla empleados x dias con el texto del horario de cada dia (para la vista publica)."""
+    emps = listar_empleados(solo_activos=True)
+    turnos = turnos_rango(lunes, lunes + timedelta(days=6))
+    filas = []
+    for e in emps.itertuples():
+        plantilla = horario_empleado(int(e.id))
+        fila = {"Empleado": e.nombre}
+        for fecha, h in semana_empleado(int(e.id), lunes, plantilla, turnos):
+            etiqueta = f"{DIAS_CORTO[fecha.weekday()]} {fecha.day:02d}"
+            fila[etiqueta] = h.texto() if h else "Libre"
+        filas.append(fila)
+    return pd.DataFrame(filas)
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +551,7 @@ class ResumenDia:
     dia_semana: int
     programada_entrada: time | None
     programada_salida: time | None
+    horario_txt: str
     jornada_min: int
     entrada_real: datetime | None
     salida_real: datetime | None
@@ -468,7 +599,7 @@ def resumir_dia(
     nombre: str,
     fecha: date,
     marcas: list[tuple[str, datetime]],
-    horario: dict[int, Horario],
+    hor: Horario | None,
     tolerancia: int,
     contar_antes: bool,
 ) -> ResumenDia:
@@ -480,9 +611,10 @@ def resumir_dia(
         turno partido: entrada, salida, entrada, salida...).
       - Trabajado = suma de los bloques. Los descansos no cuentan.
       - Extra = trabajado - jornada programada (si supera la tolerancia).
-      - Tardanza = primera entrada vs hora de entrada programada.
+      - Tardanza = cada bloque trabajado se compara con el bloque programado
+        correspondiente (1o con 1o, 2o con 2o).
       - Si contar_antes es False, el tiempo antes de la hora de entrada
-        programada no se cuenta como trabajado.
+        programada de cada bloque no se cuenta como trabajado.
       - Dia sin horario: todo lo trabajado es extra.
     """
     bloques, sin_salida, sin_entrada = _sesiones(marcas)
@@ -492,7 +624,6 @@ def resumir_dia(
     salida_real = max(salidas) if salidas else None
 
     dia = fecha.weekday()
-    hor = horario.get(dia)
     obs = []
     if sin_salida:
         obs.append("Sin salida")
@@ -508,17 +639,21 @@ def resumir_dia(
             extra = trabajados
             obs.append("Día no programado")
     else:
-        prog_ent_dt = datetime.combine(fecha, hor.hora_entrada)
-        # Recortar lo trabajado antes de la hora de entrada si no debe contar
+        # Inicio programado de cada bloque (en datetime)
+        inicios = [datetime.combine(fecha, b[0]) for b in hor.bloques]
         recortados = []
-        for e, s_ in bloques:
-            if not contar_antes and e < prog_ent_dt:
-                e = min(prog_ent_dt, s_)
+        for i, (e, s_) in enumerate(bloques):
+            prog = inicios[i] if i < len(inicios) else None
+            if prog is not None:
+                if e > prog:
+                    tardanza += _aplicar_tolerancia(_minutos(e - prog), tolerancia)
+                elif not contar_antes:
+                    e = min(prog, s_)
             recortados.append((e, s_))
         trabajados = sum(_minutos(s_ - e) for e, s_ in recortados)
 
-        if entrada_real and entrada_real > prog_ent_dt:
-            tardanza = _aplicar_tolerancia(_minutos(entrada_real - prog_ent_dt), tolerancia)
+        if hor.partido and not sin_salida and 0 < len(bloques) < len(hor.bloques):
+            obs.append("Faltó marcar el descanso")
 
         if trabajados > jornada:
             extra = _aplicar_tolerancia(trabajados - jornada, tolerancia)
@@ -534,6 +669,7 @@ def resumir_dia(
         dia_semana=dia,
         programada_entrada=hor.hora_entrada if hor else None,
         programada_salida=hor.hora_salida if hor else None,
+        horario_txt=hor.texto() if hor else "",
         jornada_min=jornada,
         entrada_real=entrada_real,
         salida_real=salida_real,
@@ -554,6 +690,7 @@ def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None) -> 
 
     tol = tolerancia_min()
     antes = contar_entrada_anticipada()
+    turnos = turnos_rango(desde, hasta, empleado_id)
     horarios_cache: dict[int, dict[int, Horario]] = {}
     filas = []
 
@@ -561,8 +698,9 @@ def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None) -> 
         if emp_id not in horarios_cache:
             horarios_cache[emp_id] = horario_empleado(int(emp_id))
         fecha = date.fromisoformat(fecha_txt)
+        hor = horario_del_dia(int(emp_id), fecha, horarios_cache[emp_id], turnos)
         marcas = [(r.tipo, r.fecha_hora.to_pydatetime()) for r in grupo.itertuples()]
-        filas.append(resumir_dia(int(emp_id), nombre, fecha, marcas, horarios_cache[emp_id], tol, antes))
+        filas.append(resumir_dia(int(emp_id), nombre, fecha, marcas, hor, tol, antes))
 
     df = pd.DataFrame([r.__dict__ for r in filas])
     df["dia"] = df["dia_semana"].map(lambda d: DIAS_CORTO[d])
@@ -589,17 +727,15 @@ def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame) -> byte
             res["horas_extra"] = (res["extra_total_min"] / 60).round(2)
             for c in ("entrada_real", "salida_real"):
                 res[c] = pd.to_datetime(res[c]).dt.strftime("%H:%M").fillna("")
-            for c in ("programada_entrada", "programada_salida"):
-                res[c] = res[c].map(lambda t: t.strftime("%H:%M") if t else "")
             res["horas_jornada"] = (res["jornada_min"] / 60).round(2)
             cols = [
-                "nombre", "fecha", "dia", "programada_entrada", "programada_salida", "horas_jornada",
+                "nombre", "fecha", "dia", "horario_txt", "horas_jornada",
                 "entrada_real", "salida_real", "bloques", "horas_trabajadas", "tardanza_min",
                 "faltante_min", "extra_total_min", "horas_extra", "observacion",
             ]
             res[cols].rename(columns={
                 "nombre": "Empleado", "fecha": "Fecha", "dia": "Día",
-                "programada_entrada": "Entrada prog.", "programada_salida": "Salida prog.",
+                "horario_txt": "Horario programado",
                 "entrada_real": "Entrada real", "salida_real": "Salida real",
                 "horas_trabajadas": "Horas trabajadas", "tardanza_min": "Tardanza (min)",
                 "horas_jornada": "Jornada (h)", "bloques": "Bloques", "faltante_min": "Faltante (min)",
