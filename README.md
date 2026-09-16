@@ -32,16 +32,20 @@ En el celular conviene guardar la dirección en la pantalla de inicio
 
 ## Reglas de cálculo de extras
 
-- Se toma la **primera entrada** y la **última salida** de cada día.
-- **Extra después** = minutos entre la salida programada y la salida real.
-- **Extra antes** = minutos entre la entrada real y la entrada programada
-  (solo si está activado en Configuración).
-- **Tardanza** = minutos entre la entrada programada y la entrada real.
+- Cada persona marca **entrada** y **salida** cada vez que llega o se va. En turno
+  partido son 4 marcaciones (entrada, salida al descanso, entrada, salida final).
+- La app empareja cada entrada con su salida en **bloques** y suma solo lo
+  trabajado; los descansos no cuentan.
+- Cada día del horario tiene hora de entrada, hora normal de salida y **horas de
+  jornada** (ej. 8h). No importa cómo se reparta el día.
+- **Extra** = horas trabajadas − jornada (si supera la tolerancia).
+- **Faltante** = jornada − horas trabajadas, cuando el día quedó completo pero corto.
+- **Tardanza** = minutos entre la hora de entrada programada y la primera entrada real.
 - **Tolerancia**: si la diferencia no supera los minutos de tolerancia, no cuenta.
   Si la supera, cuentan todos los minutos.
+- Por defecto el tiempo **antes** de la hora de entrada no cuenta como trabajado
+  (se puede activar en Configuración).
 - **Día no programado** (ej. domingo sin horario): todo el tiempo trabajado es extra.
-- Un turno que cruza medianoche (ej. 22:00–06:00) se calcula bien siempre que la
-  salida se marque en el mismo turno.
 
 ## Reporte
 

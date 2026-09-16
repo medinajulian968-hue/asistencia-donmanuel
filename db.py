@@ -231,41 +231,55 @@ class Horario:
     dia_semana: int
     hora_entrada: time
     hora_salida: time
+    jornada_min: int  # minutos que debe trabajar ese dia (sin contar descansos)
 
     @property
     def cruza_medianoche(self) -> bool:
         return self.hora_salida <= self.hora_entrada
 
 
+def duracion_min(entrada: time, salida: time) -> int:
+    """Minutos entre dos horas; si la salida es menor, se asume que cruza medianoche."""
+    e = entrada.hour * 60 + entrada.minute
+    s_ = salida.hour * 60 + salida.minute
+    return s_ - e if s_ > e else s_ + 24 * 60 - e
+
+
 def horario_empleado(empleado_id: int) -> dict[int, Horario]:
     """Devuelve {dia_semana: Horario} solo para los dias que trabaja."""
     data = (
-        cliente().table("horarios").select("dia_semana,hora_entrada,hora_salida")
+        cliente().table("horarios").select("dia_semana,hora_entrada,hora_salida,jornada_min")
         .eq("empleado_id", empleado_id).execute().data
     )
-    return {
-        f["dia_semana"]: Horario(f["dia_semana"], _parse_hora(f["hora_entrada"]), _parse_hora(f["hora_salida"]))
-        for f in data
-    }
+    out = {}
+    for f in data:
+        ent, sal = _parse_hora(f["hora_entrada"]), _parse_hora(f["hora_salida"])
+        jor = f.get("jornada_min") or duracion_min(ent, sal)
+        out[f["dia_semana"]] = Horario(f["dia_semana"], ent, sal, int(jor))
+    return out
 
 
-def guardar_horario(empleado_id: int, dias: dict[int, tuple[time, time] | None]) -> None:
-    """dias = {dia_semana: (entrada, salida)} o None si ese dia no trabaja."""
+def guardar_horario(empleado_id: int, dias: dict[int, tuple[time, time, int] | None]) -> None:
+    """dias = {dia_semana: (entrada, salida, jornada_min)} o None si ese dia no trabaja."""
     sb = cliente()
     sb.table("horarios").delete().eq("empleado_id", empleado_id).execute()
-    filas = [
-        {"empleado_id": empleado_id, "dia_semana": dia,
-         "hora_entrada": ent.strftime("%H:%M"), "hora_salida": sal.strftime("%H:%M")}
-        for dia, valor in dias.items() if valor is not None
-        for ent, sal in [valor]
-    ]
+    filas = []
+    for dia, valor in dias.items():
+        if valor is None:
+            continue
+        ent, sal, jor = valor
+        filas.append({
+            "empleado_id": empleado_id, "dia_semana": dia,
+            "hora_entrada": ent.strftime("%H:%M"), "hora_salida": sal.strftime("%H:%M"),
+            "jornada_min": int(jor) if jor else duracion_min(ent, sal),
+        })
     if filas:
         sb.table("horarios").insert(filas).execute()
 
 
 def copiar_horario(origen_id: int, destino_id: int) -> None:
     hor = horario_empleado(origen_id)
-    guardar_horario(destino_id, {d: (h.hora_entrada, h.hora_salida) for d, h in hor.items()})
+    guardar_horario(destino_id, {d: (h.hora_entrada, h.hora_salida, h.jornada_min) for d, h in hor.items()})
 
 
 # ---------------------------------------------------------------------------
@@ -407,13 +421,14 @@ class ResumenDia:
     dia_semana: int
     programada_entrada: time | None
     programada_salida: time | None
+    jornada_min: int
     entrada_real: datetime | None
     salida_real: datetime | None
+    bloques: int
     minutos_trabajados: int
     tardanza_min: int
-    extra_antes_min: int
-    extra_despues_min: int
     extra_total_min: int
+    faltante_min: int
     observacion: str
 
 
@@ -424,6 +439,28 @@ def _minutos(delta: timedelta) -> int:
 def _aplicar_tolerancia(minutos: int, tolerancia: int) -> int:
     """Si no supera la tolerancia, no cuenta. Si la supera, cuentan todos los minutos."""
     return minutos if minutos > tolerancia else 0
+
+
+def _sesiones(marcas: list[tuple[str, datetime]]) -> tuple[list[tuple[datetime, datetime]], bool, bool]:
+    """
+    Empareja entradas con salidas en orden cronologico: entrada + salida = un bloque.
+    Devuelve (bloques, hay_entrada_sin_salida, hay_salida_sin_entrada).
+    Una entrada repetida sin salida en medio se ignora (se conserva la primera).
+    """
+    bloques = []
+    abierta = None
+    salida_suelta = False
+    for tipo, m in sorted(marcas, key=lambda x: x[1]):
+        if tipo == TIPO_ENTRADA:
+            if abierta is None:
+                abierta = m
+        else:
+            if abierta is not None and m > abierta:
+                bloques.append((abierta, m))
+                abierta = None
+            else:
+                salida_suelta = True
+    return bloques, abierta is not None, salida_suelta
 
 
 def resumir_dia(
@@ -437,8 +474,18 @@ def resumir_dia(
 ) -> ResumenDia:
     """
     Calcula el resumen de un dia a partir de las marcaciones.
-    Regla: se toma la PRIMERA entrada y la ULTIMA salida del dia.
+
+    Reglas:
+      - Las marcaciones se emparejan entrada+salida en bloques (sirve para
+        turno partido: entrada, salida, entrada, salida...).
+      - Trabajado = suma de los bloques. Los descansos no cuentan.
+      - Extra = trabajado - jornada programada (si supera la tolerancia).
+      - Tardanza = primera entrada vs hora de entrada programada.
+      - Si contar_antes es False, el tiempo antes de la hora de entrada
+        programada no se cuenta como trabajado.
+      - Dia sin horario: todo lo trabajado es extra.
     """
+    bloques, sin_salida, sin_entrada = _sesiones(marcas)
     entradas = [m for t, m in marcas if t == TIPO_ENTRADA]
     salidas = [m for t, m in marcas if t == TIPO_SALIDA]
     entrada_real = min(entradas) if entradas else None
@@ -446,55 +493,55 @@ def resumir_dia(
 
     dia = fecha.weekday()
     hor = horario.get(dia)
-    prog_ent = hor.hora_entrada if hor else None
-    prog_sal = hor.hora_salida if hor else None
-
-    trabajados = tardanza = extra_antes = extra_despues = 0
     obs = []
-
-    if entrada_real and salida_real and salida_real > entrada_real:
-        trabajados = _minutos(salida_real - entrada_real)
-    elif entrada_real and not salida_real:
+    if sin_salida:
         obs.append("Sin salida")
-    elif salida_real and not entrada_real:
+    if sin_entrada:
         obs.append("Sin entrada")
 
+    tardanza = extra = faltante = 0
+    jornada = hor.jornada_min if hor else 0
+
     if hor is None:
-        # Dia no laboral segun el horario: todo lo trabajado es extra.
+        trabajados = sum(_minutos(s_ - e) for e, s_ in bloques)
         if trabajados:
-            extra_despues = trabajados
+            extra = trabajados
             obs.append("Día no programado")
     else:
         prog_ent_dt = datetime.combine(fecha, hor.hora_entrada)
-        prog_sal_dt = datetime.combine(fecha, hor.hora_salida)
-        if hor.cruza_medianoche:
-            prog_sal_dt += timedelta(days=1)
+        # Recortar lo trabajado antes de la hora de entrada si no debe contar
+        recortados = []
+        for e, s_ in bloques:
+            if not contar_antes and e < prog_ent_dt:
+                e = min(prog_ent_dt, s_)
+            recortados.append((e, s_))
+        trabajados = sum(_minutos(s_ - e) for e, s_ in recortados)
 
-        if entrada_real:
-            if entrada_real > prog_ent_dt:
-                tardanza = _aplicar_tolerancia(_minutos(entrada_real - prog_ent_dt), tolerancia)
-            elif contar_antes:
-                extra_antes = _aplicar_tolerancia(_minutos(prog_ent_dt - entrada_real), tolerancia)
+        if entrada_real and entrada_real > prog_ent_dt:
+            tardanza = _aplicar_tolerancia(_minutos(entrada_real - prog_ent_dt), tolerancia)
 
-        if salida_real and salida_real > prog_sal_dt:
-            extra_despues = _aplicar_tolerancia(_minutos(salida_real - prog_sal_dt), tolerancia)
-        elif salida_real and entrada_real and salida_real < prog_sal_dt:
-            obs.append("Salida anticipada")
+        if trabajados > jornada:
+            extra = _aplicar_tolerancia(trabajados - jornada, tolerancia)
+        elif bloques and not sin_salida and trabajados < jornada:
+            faltante = _aplicar_tolerancia(jornada - trabajados, tolerancia)
+            if faltante:
+                obs.append("Jornada incompleta")
 
     return ResumenDia(
         empleado_id=empleado_id,
         nombre=nombre,
         fecha=fecha,
         dia_semana=dia,
-        programada_entrada=prog_ent,
-        programada_salida=prog_sal,
+        programada_entrada=hor.hora_entrada if hor else None,
+        programada_salida=hor.hora_salida if hor else None,
+        jornada_min=jornada,
         entrada_real=entrada_real,
         salida_real=salida_real,
+        bloques=len(bloques),
         minutos_trabajados=trabajados,
         tardanza_min=tardanza,
-        extra_antes_min=extra_antes,
-        extra_despues_min=extra_despues,
-        extra_total_min=extra_antes + extra_despues,
+        extra_total_min=extra,
+        faltante_min=faltante,
         observacion=", ".join(obs),
     )
 
@@ -544,17 +591,18 @@ def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame) -> byte
                 res[c] = pd.to_datetime(res[c]).dt.strftime("%H:%M").fillna("")
             for c in ("programada_entrada", "programada_salida"):
                 res[c] = res[c].map(lambda t: t.strftime("%H:%M") if t else "")
+            res["horas_jornada"] = (res["jornada_min"] / 60).round(2)
             cols = [
-                "nombre", "fecha", "dia", "programada_entrada", "programada_salida",
-                "entrada_real", "salida_real", "horas_trabajadas", "tardanza_min",
-                "extra_antes_min", "extra_despues_min", "extra_total_min", "horas_extra", "observacion",
+                "nombre", "fecha", "dia", "programada_entrada", "programada_salida", "horas_jornada",
+                "entrada_real", "salida_real", "bloques", "horas_trabajadas", "tardanza_min",
+                "faltante_min", "extra_total_min", "horas_extra", "observacion",
             ]
             res[cols].rename(columns={
                 "nombre": "Empleado", "fecha": "Fecha", "dia": "Día",
                 "programada_entrada": "Entrada prog.", "programada_salida": "Salida prog.",
                 "entrada_real": "Entrada real", "salida_real": "Salida real",
                 "horas_trabajadas": "Horas trabajadas", "tardanza_min": "Tardanza (min)",
-                "extra_antes_min": "Extra antes (min)", "extra_despues_min": "Extra después (min)",
+                "horas_jornada": "Jornada (h)", "bloques": "Bloques", "faltante_min": "Faltante (min)",
                 "extra_total_min": "Extra total (min)", "horas_extra": "Horas extra", "observacion": "Observación",
             }).to_excel(xw, sheet_name="Resumen por día", index=False)
 

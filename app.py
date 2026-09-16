@@ -175,7 +175,8 @@ def pagina_registrar():
     marcas_hoy = db.registros_del_dia(emp_id, hoy)
 
     if hor_hoy:
-        txt_horario = f"{hora_t(hor_hoy.hora_entrada)} – {hora_t(hor_hoy.hora_salida)}"
+        txt_horario = (f"{hora_t(hor_hoy.hora_entrada)} – {hora_t(hor_hoy.hora_salida)} "
+                       f"(jornada {fmt_hm(hor_hoy.jornada_min)})")
     else:
         txt_horario = "Sin horario programado (día no laboral)"
 
@@ -275,12 +276,12 @@ def mostrar_resumen_hoy(emp_id: int, nombre: str, fecha: date, horario):
     partes = []
     if r.tardanza_min:
         partes.append(f"⏰ Llegada tarde: **{fmt_hm(r.tardanza_min)}**")
-    if r.extra_antes_min:
-        partes.append(f"➕ Extra antes de la entrada: **{fmt_hm(r.extra_antes_min)}**")
-    if r.extra_despues_min:
-        partes.append(f"➕ Extra después de la salida: **{fmt_hm(r.extra_despues_min)}**")
+    if r.extra_total_min:
+        partes.append(f"➕ Horas extra de hoy: **{fmt_hm(r.extra_total_min)}**")
     if r.minutos_trabajados:
-        partes.append(f"🕒 Tiempo en jornada: **{fmt_hm(r.minutos_trabajados)}**")
+        bloques = f" en {r.bloques} bloques" if r.bloques > 1 else ""
+        partes.append(f"🕒 Trabajado hoy: **{fmt_hm(r.minutos_trabajados)}**{bloques}"
+                      + (f" de {fmt_hm(r.jornada_min)}" if r.jornada_min else ""))
     if r.observacion:
         partes.append(f"ℹ️ {r.observacion}")
     if partes:
@@ -359,10 +360,13 @@ def pagina_reporte():
             f"{hora_t(e)} – {hora_t(s)}" if e else "No programado"
             for e, s in zip(resumen["programada_entrada"], resumen["programada_salida"])
         ],
+        "Jornada": resumen["jornada_min"].map(fmt_hm),
         "Entrada": resumen["entrada_real"].map(hora),
         "Salida": resumen["salida_real"].map(hora),
+        "Bloques": resumen["bloques"],
         "Trabajado": resumen["minutos_trabajados"].map(fmt_hm),
         "Tardanza": resumen["tardanza_min"].map(fmt_hm),
+        "Faltante": resumen["faltante_min"].map(fmt_hm),
         "Extra": resumen["extra_total_min"].map(fmt_hm),
         "Observación": resumen["observacion"],
     })
@@ -465,20 +469,27 @@ def admin_horarios():
     emp_id = nombres[sel]
     actual = db.horario_empleado(emp_id)
 
-    st.caption("Marca los días que trabaja y su hora de entrada y salida. Lo que quede fuera de ese rango cuenta como extra.")
+    st.caption(
+        "Marca los días que trabaja, la hora de entrada (para calcular tardanzas), la hora normal de "
+        "salida y las **horas de jornada** que debe cumplir ese día. Lo trabajado por encima de la "
+        "jornada es extra. Sirve para turno corrido o partido: cada quien marca entrada/salida las "
+        "veces que salga y vuelva, y la app suma solo los bloques trabajados."
+    )
 
     # Relleno rapido
     with st.expander("Relleno rápido"):
-        c1, c2, c3 = st.columns([1, 1, 1.4])
+        c1, c2, c3, c4 = st.columns([1, 1, 0.8, 1.4])
         q_ent = c1.time_input("Entrada", value=time(8, 0), key="q_ent", step=timedelta(minutes=15))
         q_sal = c2.time_input("Salida", value=time(17, 0), key="q_sal", step=timedelta(minutes=15))
-        q_dias = c3.multiselect("Días", DIAS_ES, default=DIAS_ES[:5], key="q_dias")
+        q_jor = c3.number_input("Jornada (h)", min_value=0.0, max_value=24.0, value=8.0, step=0.5, key="q_jor")
+        q_dias = c4.multiselect("Días", DIAS_ES, default=DIAS_ES[:5], key="q_dias")
         if st.button("Aplicar a los días elegidos", width="stretch"):
             for d in q_dias:
                 i = DIAS_ES.index(d)
                 st.session_state[f"h_on_{emp_id}_{i}"] = True
                 st.session_state[f"h_ent_{emp_id}_{i}"] = q_ent
                 st.session_state[f"h_sal_{emp_id}_{i}"] = q_sal
+                st.session_state[f"h_jor_{emp_id}_{i}"] = float(q_jor)
             st.rerun()
 
         otros = [n for n in nombres if nombres[n] != emp_id]
@@ -488,7 +499,7 @@ def admin_horarios():
             if c5.button("Copiar", width="stretch", disabled=origen is None):
                 db.copiar_horario(nombres[origen], emp_id)
                 for i in range(7):
-                    for k in ("h_on", "h_ent", "h_sal"):
+                    for k in ("h_on", "h_ent", "h_sal", "h_jor"):
                         st.session_state.pop(f"{k}_{emp_id}_{i}", None)
                 st.success("Horario copiado.")
                 st.rerun()
@@ -501,17 +512,25 @@ def admin_horarios():
             st.session_state[f"h_on_{emp_id}_{i}"] = h is not None
             st.session_state[f"h_ent_{emp_id}_{i}"] = h.hora_entrada if h else time(8, 0)
             st.session_state[f"h_sal_{emp_id}_{i}"] = h.hora_salida if h else time(17, 0)
+            st.session_state[f"h_jor_{emp_id}_{i}"] = round(h.jornada_min / 60, 2) if h else 8.0
 
     with st.form(f"form_hor_{emp_id}"):
-        nuevos: dict[int, tuple[time, time] | None] = {}
+        h1, h2, h3, h4 = st.columns([1.3, 1, 1, 0.8])
+        h1.caption("Día")
+        h2.caption("Entrada")
+        h3.caption("Salida")
+        h4.caption("Jornada (h)")
+        nuevos: dict[int, tuple[time, time, int] | None] = {}
         for i, dia in enumerate(DIAS_ES):
-            c1, c2, c3 = st.columns([1.3, 1, 1])
+            c1, c2, c3, c4 = st.columns([1.3, 1, 1, 0.8])
             on = c1.checkbox(dia, key=f"h_on_{emp_id}_{i}")
             ent = c2.time_input("Entrada", key=f"h_ent_{emp_id}_{i}",
                                 step=timedelta(minutes=5), label_visibility="collapsed")
             sal = c3.time_input("Salida", key=f"h_sal_{emp_id}_{i}",
                                 step=timedelta(minutes=5), label_visibility="collapsed")
-            nuevos[i] = (ent, sal) if on else None
+            jor = c4.number_input("Jornada", key=f"h_jor_{emp_id}_{i}", min_value=0.0, max_value=24.0,
+                                  step=0.5, label_visibility="collapsed")
+            nuevos[i] = (ent, sal, int(round(jor * 60))) if on else None
         if st.form_submit_button("Guardar horario", type="primary", width="stretch"):
             db.guardar_horario(emp_id, nuevos)
             st.success(f"Horario de {sel} guardado.")
@@ -519,7 +538,8 @@ def admin_horarios():
 
     if actual:
         st.caption("Horario actual: " + " · ".join(
-            f"{DIAS_ES[d][:3]} {hora_t(h.hora_entrada)}–{hora_t(h.hora_salida)}" for d, h in sorted(actual.items())
+            f"{DIAS_ES[d][:3]} {hora_t(h.hora_entrada)}–{hora_t(h.hora_salida)} ({fmt_hm(h.jornada_min)})"
+            for d, h in sorted(actual.items())
         ))
     else:
         st.warning("Este empleado no tiene horario. Sin horario, todo lo que trabaje se contará como extra.")

@@ -59,7 +59,7 @@ def main() -> None:
     for h in con.execute("SELECT * FROM horarios"):
         sb.table("horarios").upsert({
             "empleado_id": mapa[h["empleado_id"]], "dia_semana": h["dia_semana"],
-            "hora_entrada": h["hora_entrada"], "hora_salida": h["hora_salida"],
+            "hora_entrada": h["hora_entrada"], "hora_salida": h["hora_salida"], "jornada_min": None,
         }, on_conflict="empleado_id,dia_semana").execute()
     print("  horarios copiados")
 
