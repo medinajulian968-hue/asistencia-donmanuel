@@ -181,7 +181,7 @@ def horas_mes_legal() -> float:
 # EMPLEADOS
 # ---------------------------------------------------------------------------
 
-COLS_EMPLEADO = ["id", "nombre", "cargo", "pin", "activo", "creado_en"]
+COLS_EMPLEADO = ["id", "nombre", "cargo", "pin", "sede", "activo", "creado_en"]
 
 
 def listar_empleados(solo_activos: bool = True) -> pd.DataFrame:
@@ -194,6 +194,7 @@ def listar_empleados(solo_activos: bool = True) -> pd.DataFrame:
         df["activo"] = df["activo"].astype(bool)
         df["cargo"] = df["cargo"].fillna("")
         df["pin"] = df["pin"].fillna("")
+        df["sede"] = df["sede"].fillna("")
         # Orden sin distinguir mayusculas/acentos como hacia SQLite
         df = df.sort_values("nombre", key=lambda s: s.str.lower()).reset_index(drop=True)
     return df
@@ -204,24 +205,25 @@ def obtener_empleado(empleado_id: int) -> dict | None:
     return data[0] if data else None
 
 
-def crear_empleado(nombre: str, cargo: str = "", pin: str = "") -> int:
+def crear_empleado(nombre: str, cargo: str = "", pin: str = "", sede: str = "") -> int:
     nombre = nombre.strip()
     if not nombre:
         raise ValueError("El nombre no puede estar vacío.")
     data = (
         cliente()
         .table("empleados")
-        .insert({"nombre": nombre, "cargo": cargo.strip(), "pin": pin.strip(), "activo": True,
-                 "creado_en": _iso(ahora())})
+        .insert({"nombre": nombre, "cargo": cargo.strip(), "pin": pin.strip(), "sede": (sede or "").strip(),
+                 "activo": True, "creado_en": _iso(ahora())})
         .execute()
         .data
     )
     return int(data[0]["id"])
 
 
-def actualizar_empleado(empleado_id: int, nombre: str, cargo: str, pin: str, activo: bool) -> None:
+def actualizar_empleado(empleado_id: int, nombre: str, cargo: str, pin: str, activo: bool, sede: str = "") -> None:
     cliente().table("empleados").update(
-        {"nombre": nombre.strip(), "cargo": cargo.strip(), "pin": pin.strip(), "activo": bool(activo)}
+        {"nombre": nombre.strip(), "cargo": cargo.strip(), "pin": pin.strip(), "activo": bool(activo),
+         "sede": (sede or "").strip()}
     ).eq("id", empleado_id).execute()
 
 
@@ -248,9 +250,10 @@ Bloque = tuple[time, time]
 
 @dataclass
 class Horario:
-    """Lo que debe trabajar una persona un dia: 1 o 2 bloques (turno partido)."""
+    """Lo que debe trabajar una persona un dia: 1 o 2 bloques (turno partido) y en que sede."""
     bloques: list[Bloque]
     origen: str = "plantilla"  # "plantilla" (dia de la semana) o "turno" (fecha programada)
+    sede: str = ""
 
     @property
     def hora_entrada(self) -> time:
@@ -268,8 +271,9 @@ class Horario:
     def partido(self) -> bool:
         return len(self.bloques) > 1
 
-    def texto(self) -> str:
-        return " y ".join(f"{e.strftime('%H:%M')}–{s_.strftime('%H:%M')}" for e, s_ in self.bloques)
+    def texto(self, con_sede: bool = False) -> str:
+        t = " y ".join(f"{e.strftime('%H:%M')}–{s_.strftime('%H:%M')}" for e, s_ in self.bloques)
+        return f"{t} · {self.sede}" if con_sede and self.sede else t
 
 
 def duracion_min(entrada: time, salida: time) -> int:
@@ -288,7 +292,7 @@ def _bloques_de_fila(f: dict) -> list[Bloque]:
     return bloques
 
 
-def _fila_de_bloques(bloques: list[Bloque]) -> dict:
+def _fila_de_bloques(bloques: list[Bloque], sede: str = "") -> dict:
     b1 = bloques[0] if bloques else None
     b2 = bloques[1] if len(bloques) > 1 else None
     return {
@@ -296,7 +300,24 @@ def _fila_de_bloques(bloques: list[Bloque]) -> dict:
         "hora_salida": b1[1].strftime("%H:%M") if b1 else None,
         "hora_entrada2": b2[0].strftime("%H:%M") if b2 else None,
         "hora_salida2": b2[1].strftime("%H:%M") if b2 else None,
+        "sede": (sede or "").strip(),
     }
+
+
+def _horario_de_fila(f: dict, origen: str) -> Horario | None:
+    b = _bloques_de_fila(f)
+    return Horario(b, origen, (f.get("sede") or "").strip()) if b else None
+
+
+def _normalizar_horario(h) -> Horario | None:
+    """Acepta Horario, lista de bloques o None y devuelve Horario limpio o None."""
+    if h is None:
+        return None
+    if isinstance(h, Horario):
+        bloques, sede = limpiar_bloques(h.bloques), h.sede
+    else:
+        bloques, sede = limpiar_bloques(h), ""
+    return Horario(bloques, sede=sede) if bloques else None
 
 
 def limpiar_bloques(bloques) -> list[Bloque]:
@@ -310,28 +331,28 @@ def limpiar_bloques(bloques) -> list[Bloque]:
 def horario_empleado(empleado_id: int) -> dict[int, Horario]:
     """Plantilla: {dia_semana: Horario} solo para los dias que trabaja."""
     data = (
-        cliente().table("horarios").select("dia_semana,hora_entrada,hora_salida,hora_entrada2,hora_salida2")
+        cliente().table("horarios").select("dia_semana,hora_entrada,hora_salida,hora_entrada2,hora_salida2,sede")
         .eq("empleado_id", empleado_id).execute().data
     )
     out = {}
     for f in data:
-        b = _bloques_de_fila(f)
-        if b:
-            out[f["dia_semana"]] = Horario(b, "plantilla")
+        h = _horario_de_fila(f, "plantilla")
+        if h:
+            out[f["dia_semana"]] = h
     return out
 
 
-def guardar_horario(empleado_id: int, dias: dict[int, list[Bloque] | None]) -> None:
-    """dias = {dia_semana: [bloques]} o None/[] si ese dia no trabaja."""
+def guardar_horario(empleado_id: int, dias: dict[int, "Horario | list[Bloque] | None"]) -> None:
+    """dias = {dia_semana: Horario (o lista de bloques)} o None si ese dia no trabaja."""
     sb = cliente()
     sb.table("horarios").delete().eq("empleado_id", empleado_id).execute()
     filas = []
-    for dia, bloques in dias.items():
-        bloques = limpiar_bloques(bloques or [])
-        if not bloques:
+    for dia, h in dias.items():
+        h = _normalizar_horario(h)
+        if h is None:
             continue
-        fila = _fila_de_bloques(bloques)
-        fila["jornada_min"] = Horario(bloques).jornada_min
+        fila = _fila_de_bloques(h.bloques, h.sede)
+        fila["jornada_min"] = h.jornada_min
         filas.append({"empleado_id": empleado_id, "dia_semana": dia, **fila})
     if filas:
         sb.table("horarios").insert(filas).execute()
@@ -339,7 +360,7 @@ def guardar_horario(empleado_id: int, dias: dict[int, list[Bloque] | None]) -> N
 
 def copiar_horario(origen_id: int, destino_id: int) -> None:
     hor = horario_empleado(origen_id)
-    guardar_horario(destino_id, {d: h.bloques for d, h in hor.items()})
+    guardar_horario(destino_id, dict(hor))
 
 
 # --- Turnos programados por fecha -------------------------------------------
@@ -361,25 +382,24 @@ def turnos_rango(desde: date, hasta: date, empleado_id: int | None = None) -> di
         q = q.eq("empleado_id", empleado_id)
     out = {}
     for f in q.execute().data:
-        b = _bloques_de_fila(f)
-        out[(int(f["empleado_id"]), date.fromisoformat(f["fecha"]))] = Horario(b, "turno") if b and not f.get("libre") else None
+        h = None if f.get("libre") else _horario_de_fila(f, "turno")
+        out[(int(f["empleado_id"]), date.fromisoformat(f["fecha"]))] = h
     return out
 
 
-def guardar_turno(empleado_id: int, fecha: date, bloques: list[Bloque] | None) -> None:
-    """bloques=None o [] -> dia libre programado."""
-    bloques = limpiar_bloques(bloques or [])
-    fila = {"empleado_id": empleado_id, "fecha": fecha.strftime("%Y-%m-%d"), "libre": not bloques,
-            **_fila_de_bloques(bloques)}
-    cliente().table("turnos").upsert(fila, on_conflict="empleado_id,fecha").execute()
+def _fila_turno(empleado_id: int, fecha: date, h) -> dict:
+    h = _normalizar_horario(h)
+    return {"empleado_id": empleado_id, "fecha": fecha.strftime("%Y-%m-%d"), "libre": h is None,
+            **_fila_de_bloques(h.bloques if h else [], h.sede if h else "")}
 
 
-def guardar_semana(empleado_id: int, lunes: date, dias: dict[date, list[Bloque] | None]) -> None:
-    filas = []
-    for fecha, bloques in dias.items():
-        bloques = limpiar_bloques(bloques or [])
-        filas.append({"empleado_id": empleado_id, "fecha": fecha.strftime("%Y-%m-%d"), "libre": not bloques,
-                      **_fila_de_bloques(bloques)})
+def guardar_turno(empleado_id: int, fecha: date, h) -> None:
+    """h=None -> dia libre programado."""
+    cliente().table("turnos").upsert(_fila_turno(empleado_id, fecha, h), on_conflict="empleado_id,fecha").execute()
+
+
+def guardar_semana(empleado_id: int, lunes: date, dias: dict[date, "Horario | list[Bloque] | None"]) -> None:
+    filas = [_fila_turno(empleado_id, fecha, h) for fecha, h in dias.items()]
     if filas:
         cliente().table("turnos").upsert(filas, on_conflict="empleado_id,fecha").execute()
 
@@ -392,41 +412,84 @@ def borrar_semana(empleado_id: int, lunes: date) -> None:
 
 
 def horario_del_dia(empleado_id: int, fecha: date, plantilla: dict[int, Horario] | None = None,
-                    turnos: dict | None = None) -> Horario | None:
-    """Turno programado para esa fecha si existe; si no, la plantilla del dia de la semana."""
+                    turnos: dict | None = None, sede_defecto: str = "") -> Horario | None:
+    """
+    Turno programado para esa fecha si existe; si no, la plantilla del dia de la
+    semana. Si el dia no tiene sede, se usa la sede base del empleado.
+    """
     if turnos is None:
         turnos = turnos_rango(fecha, fecha, empleado_id)
     clave = (empleado_id, fecha)
     if clave in turnos:
-        return turnos[clave]
-    if plantilla is None:
-        plantilla = horario_empleado(empleado_id)
-    return plantilla.get(fecha.weekday())
+        h = turnos[clave]
+    else:
+        if plantilla is None:
+            plantilla = horario_empleado(empleado_id)
+        h = plantilla.get(fecha.weekday())
+    if h is not None and not h.sede and sede_defecto:
+        h = Horario(h.bloques, h.origen, sede_defecto)
+    return h
 
 
-def semana_empleado(empleado_id: int, lunes: date, plantilla=None, turnos=None) -> list[tuple[date, Horario | None]]:
+def semana_empleado(empleado_id: int, lunes: date, plantilla=None, turnos=None,
+                    sede_defecto: str | None = None) -> list[tuple[date, Horario | None]]:
     """Los 7 dias de la semana con el horario que rige cada uno."""
     if turnos is None:
         turnos = turnos_rango(lunes, lunes + timedelta(days=6), empleado_id)
     if plantilla is None:
         plantilla = horario_empleado(empleado_id)
-    return [(lunes + timedelta(days=i), horario_del_dia(empleado_id, lunes + timedelta(days=i), plantilla, turnos))
+    if sede_defecto is None:
+        e = obtener_empleado(empleado_id)
+        sede_defecto = (e or {}).get("sede") or ""
+    return [(lunes + timedelta(days=i),
+             horario_del_dia(empleado_id, lunes + timedelta(days=i), plantilla, turnos, sede_defecto))
             for i in range(7)]
 
 
-def semana_todos(lunes: date) -> pd.DataFrame:
-    """Tabla empleados x dias con el texto del horario de cada dia (para la vista publica)."""
+def semana_todos(lunes: date, sede: str | None = None) -> pd.DataFrame:
+    """
+    Tabla empleados x dias con el horario de cada dia (para la vista publica).
+    Con `sede`, solo muestra los dias en esa sede y a quienes tengan al menos uno.
+    """
     emps = listar_empleados(solo_activos=True)
     turnos = turnos_rango(lunes, lunes + timedelta(days=6))
     filas = []
     for e in emps.itertuples():
         plantilla = horario_empleado(int(e.id))
         fila = {"Empleado": e.nombre}
-        for fecha, h in semana_empleado(int(e.id), lunes, plantilla, turnos):
+        alguno = False
+        for fecha, h in semana_empleado(int(e.id), lunes, plantilla, turnos, e.sede or ""):
             etiqueta = f"{DIAS_CORTO[fecha.weekday()]} {fecha.day:02d}"
-            fila[etiqueta] = h.texto() if h else "Libre"
-        filas.append(fila)
+            if h is None:
+                fila[etiqueta] = "Libre"
+            elif sede and h.sede != sede:
+                fila[etiqueta] = f"({h.sede})" if h.sede else "(otra sede)"
+            else:
+                fila[etiqueta] = h.texto(con_sede=not sede)
+                alguno = True
+        if not sede or alguno:
+            filas.append(fila)
     return pd.DataFrame(filas)
+
+
+# --- Sedes ----------------------------------------------------------------------
+
+def listar_sedes(solo_activas: bool = True) -> list[str]:
+    q = cliente().table("sedes").select("nombre,activa")
+    if solo_activas:
+        q = q.eq("activa", True)
+    return [f["nombre"] for f in q.order("nombre").execute().data]
+
+
+def crear_sede(nombre: str) -> None:
+    nombre = nombre.strip()
+    if not nombre:
+        raise ValueError("El nombre de la sede no puede estar vacío.")
+    cliente().table("sedes").upsert({"nombre": nombre, "activa": True}, on_conflict="nombre").execute()
+
+
+def activar_sede(nombre: str, activa: bool) -> None:
+    cliente().table("sedes").update({"activa": bool(activa)}).eq("nombre", nombre).execute()
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +529,8 @@ def leer_foto(ruta: str) -> bytes | None:
         return None
 
 
-def crear_registro(empleado_id: int, tipo: str, momento: datetime, foto: str = "", nota: str = "") -> int:
+def crear_registro(empleado_id: int, tipo: str, momento: datetime, foto: str = "", nota: str = "",
+                   sede: str = "") -> int:
     if tipo not in (TIPO_ENTRADA, TIPO_SALIDA):
         raise ValueError("Tipo de registro inválido.")
     data = (
@@ -478,6 +542,7 @@ def crear_registro(empleado_id: int, tipo: str, momento: datetime, foto: str = "
             "fecha_hora": _iso(momento),
             "foto": foto,
             "nota": nota,
+            "sede": (sede or "").strip(),
             "creado_en": _iso(ahora()),
         })
         .execute().data
@@ -500,6 +565,7 @@ def _normalizar_registro(f: dict) -> dict:
     f["fecha_hora"] = _parse_dt(f["fecha_hora"])
     f["foto"] = f.get("foto") or ""
     f["nota"] = f.get("nota") or ""
+    f["sede"] = f.get("sede") or ""
     return f
 
 
@@ -531,13 +597,13 @@ def tipo_sugerido(empleado_id: int, momento: datetime) -> str:
     return TIPO_ENTRADA
 
 
-COLS_REGISTRO = ["id", "empleado_id", "nombre", "tipo", "fecha", "fecha_hora", "foto", "nota"]
+COLS_REGISTRO = ["id", "empleado_id", "nombre", "tipo", "fecha", "fecha_hora", "foto", "nota", "sede"]
 
 
 def listar_registros(desde: date, hasta: date, empleado_id: int | None = None) -> pd.DataFrame:
     q = (
         cliente().table("registros")
-        .select("id,empleado_id,tipo,fecha,fecha_hora,foto,nota,empleados(nombre)")
+        .select("id,empleado_id,tipo,fecha,fecha_hora,foto,nota,sede,empleados(nombre)")
         .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
     )
     if empleado_id is not None:
@@ -553,6 +619,7 @@ def listar_registros(desde: date, hasta: date, empleado_id: int | None = None) -
         df["fecha_hora"] = pd.to_datetime(df["fecha_hora"]).dt.tz_localize(None)
         df["foto"] = df["foto"].fillna("")
         df["nota"] = df["nota"].fillna("")
+        df["sede"] = df["sede"].fillna("")
     return df
 
 
@@ -569,6 +636,7 @@ class ResumenDia:
     programada_entrada: time | None
     programada_salida: time | None
     horario_txt: str
+    sede: str
     jornada_min: int
     entrada_real: datetime | None
     salida_real: datetime | None
@@ -687,6 +755,7 @@ def resumir_dia(
         programada_entrada=hor.hora_entrada if hor else None,
         programada_salida=hor.hora_salida if hor else None,
         horario_txt=hor.texto() if hor else "",
+        sede=hor.sede if hor else "",
         jornada_min=jornada,
         entrada_real=entrada_real,
         salida_real=salida_real,
@@ -699,8 +768,9 @@ def resumir_dia(
     )
 
 
-def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None) -> pd.DataFrame:
-    """Un renglon por empleado y dia con marcaciones en el rango."""
+def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None,
+                   sede: str | None = None) -> pd.DataFrame:
+    """Un renglon por empleado y dia con marcaciones en el rango (opcionalmente solo una sede)."""
     regs = listar_registros(desde, hasta, empleado_id)
     if regs.empty:
         return pd.DataFrame()
@@ -708,6 +778,7 @@ def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None) -> 
     tol = tolerancia_min()
     antes = contar_entrada_anticipada()
     turnos = turnos_rango(desde, hasta, empleado_id)
+    sedes_emp = {int(e.id): (e.sede or "") for e in listar_empleados(solo_activos=False).itertuples()}
     horarios_cache: dict[int, dict[int, Horario]] = {}
     filas = []
 
@@ -715,10 +786,17 @@ def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None) -> 
         if emp_id not in horarios_cache:
             horarios_cache[emp_id] = horario_empleado(int(emp_id))
         fecha = date.fromisoformat(fecha_txt)
-        hor = horario_del_dia(int(emp_id), fecha, horarios_cache[emp_id], turnos)
+        hor = horario_del_dia(int(emp_id), fecha, horarios_cache[emp_id], turnos, sedes_emp.get(int(emp_id), ""))
         marcas = [(r.tipo, r.fecha_hora.to_pydatetime()) for r in grupo.itertuples()]
-        filas.append(resumir_dia(int(emp_id), nombre, fecha, marcas, hor, tol, antes))
+        r = resumir_dia(int(emp_id), nombre, fecha, marcas, hor, tol, antes)
+        if not r.sede:  # dia sin horario: la sede que quedo en la marcacion, o la base
+            r.sede = next((x for x in grupo["sede"] if x), "") or sedes_emp.get(int(emp_id), "")
+        if sede and r.sede != sede:
+            continue
+        filas.append(r)
 
+    if not filas:
+        return pd.DataFrame()
     df = pd.DataFrame([r.__dict__ for r in filas])
     df["dia"] = df["dia_semana"].map(lambda d: DIAS_CORTO[d])
     return df
@@ -812,13 +890,13 @@ def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame,
                 res[c] = pd.to_datetime(res[c]).dt.strftime("%H:%M").fillna("")
             res["horas_jornada"] = (res["jornada_min"] / 60).round(2)
             cols = [
-                "nombre", "fecha", "dia", "horario_txt", "horas_jornada",
+                "nombre", "fecha", "dia", "sede", "horario_txt", "horas_jornada",
                 "entrada_real", "salida_real", "bloques", "horas_trabajadas", "tardanza_min",
                 "faltante_min", "extra_total_min", "horas_extra", "observacion",
             ]
             res[cols].rename(columns={
                 "nombre": "Empleado", "fecha": "Fecha", "dia": "Día",
-                "horario_txt": "Horario programado",
+                "sede": "Sede", "horario_txt": "Horario programado",
                 "entrada_real": "Entrada real", "salida_real": "Salida real",
                 "horas_trabajadas": "Horas trabajadas", "tardanza_min": "Tardanza (min)",
                 "horas_jornada": "Jornada (h)", "bloques": "Bloques", "faltante_min": "Faltante (min)",
@@ -841,10 +919,10 @@ def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame,
                 tot.to_excel(xw, sheet_name="Liquidación del período", index=False)
 
         if not df_registros.empty:
-            reg = df_registros[["nombre", "tipo", "fecha", "fecha_hora", "foto", "nota"]].copy()
+            reg = df_registros[["nombre", "sede", "tipo", "fecha", "fecha_hora", "foto", "nota"]].copy()
             reg["fecha_hora"] = reg["fecha_hora"].dt.strftime("%Y-%m-%d %H:%M:%S")
             reg.rename(columns={
-                "nombre": "Empleado", "tipo": "Tipo", "fecha": "Fecha",
+                "nombre": "Empleado", "sede": "Sede", "tipo": "Tipo", "fecha": "Fecha",
                 "fecha_hora": "Fecha y hora", "foto": "Foto", "nota": "Nota",
             }).to_excel(xw, sheet_name="Marcaciones", index=False)
 

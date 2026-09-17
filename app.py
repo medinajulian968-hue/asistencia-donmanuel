@@ -110,6 +110,19 @@ def forzar_camara():
     )
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def sedes_activas() -> list[str]:
+    return db.listar_sedes()
+
+
+def opciones_sede(actual: str = "") -> list[str]:
+    """Lista de sedes para selectores; incluye la actual aunque este inactiva."""
+    ops = sedes_activas()
+    if actual and actual not in ops:
+        ops = ops + [actual]
+    return ops
+
+
 def chip(tipo: str) -> str:
     color = COLOR_ENTRADA if tipo == TIPO_ENTRADA else COLOR_SALIDA
     return f'<span class="chip" style="background:{color}">{tipo.upper()}</span>'
@@ -171,15 +184,18 @@ def pagina_registrar():
 
     # --- Estado de hoy -------------------------------------------------
     plantilla = db.horario_empleado(emp_id)
+    sede_base = emp["sede"] or ""
     lunes = db.lunes_de(hoy)
-    semana = db.semana_empleado(emp_id, lunes, plantilla)
+    semana = db.semana_empleado(emp_id, lunes, plantilla, sede_defecto=sede_base)
     hor_hoy = dict(semana).get(hoy)
     marcas_hoy = db.registros_del_dia(emp_id, hoy)
+    sede_hoy = (hor_hoy.sede if hor_hoy else "") or sede_base
 
     if hor_hoy:
         txt_horario = f"{hor_hoy.texto()} (jornada {fmt_hm(hor_hoy.jornada_min)})"
     else:
         txt_horario = "Libre (sin horario programado)"
+    txt_sede = f"Sede: <b>{sede_hoy}</b><br>" if sede_hoy else ""
 
     if marcas_hoy:
         ult = marcas_hoy[-1]
@@ -190,7 +206,7 @@ def pagina_registrar():
     st.markdown(
         f"""<div class="tarjeta">
         <b>{nombre}</b> · {DIAS_ES[hoy.weekday()]} {hoy.strftime('%d/%m/%Y')}<br>
-        Horario de hoy: <b>{txt_horario}</b><br>
+        {txt_sede}Horario de hoy: <b>{txt_horario}</b><br>
         {txt_ultimo}
         </div>""",
         unsafe_allow_html=True,
@@ -246,7 +262,7 @@ def pagina_registrar():
             return
 
         ruta = db.guardar_foto(emp_id, tipo, momento, foto.getvalue())
-        db.crear_registro(emp_id, tipo, momento, ruta)
+        db.crear_registro(emp_id, tipo, momento, ruta, sede=sede_hoy)
 
         # Preparar la camara para la siguiente persona
         st.session_state.cam_n = st.session_state.get("cam_n", 0) + 1
@@ -268,7 +284,7 @@ def pagina_registrar():
         tabla_semana(semana, hoy)
         prox = st.checkbox("Ver la próxima semana", key="ver_prox")
         if prox:
-            tabla_semana(db.semana_empleado(emp_id, lunes + timedelta(days=7), plantilla), hoy)
+            tabla_semana(db.semana_empleado(emp_id, lunes + timedelta(days=7), plantilla, sede_defecto=sede_base), hoy)
 
     # --- Marcaciones de hoy ---------------------------------------------
     marcas_hoy = db.registros_del_dia(emp_id, hoy)
@@ -286,6 +302,7 @@ def tabla_semana(semana, hoy: date | None = None):
         marca = "👉 " if fecha == hoy else ""
         filas.append({
             "Día": f"{marca}{DIAS_ES[fecha.weekday()]} {fecha.strftime('%d/%m')}",
+            "Sede": (h.sede if h else "") or "",
             "Horario": h.texto() if h else "Libre",
             "Jornada": fmt_hm(h.jornada_min) if h else "",
         })
@@ -342,8 +359,11 @@ def pagina_reporte():
 
     empleados = db.listar_empleados(solo_activos=False)
     opciones = {"Todos": None} | {r.nombre: int(r.id) for r in empleados.itertuples()}
-    sel = st.selectbox("Empleado", list(opciones))
+    f1, f2 = st.columns(2)
+    sel = f1.selectbox("Empleado", list(opciones))
     emp_id = opciones[sel]
+    sede_sel = f2.selectbox("Sede", ["Todas"] + sedes_activas(), key="rep_sede")
+    sede_f = None if sede_sel == "Todas" else sede_sel
 
     if desde > hasta:
         st.error("La fecha 'Desde' no puede ser mayor que 'Hasta'.")
@@ -357,12 +377,15 @@ def pagina_reporte():
         "Extra = horas trabajadas en el período − jornada legal."
     )
 
-    resumen = db.reporte_extras(desde, hasta, emp_id)
+    resumen = db.reporte_extras(desde, hasta, emp_id, sede_f)
     registros = db.listar_registros(desde, hasta, emp_id)
 
     if resumen.empty:
         st.info("No hay marcaciones en ese período.")
         return
+    if sede_f:
+        st.caption(f"Mostrando solo los días trabajados en **{sede_f}**. La liquidación del período "
+                   "se calcula sobre esos días; para la liquidación completa elige *Todas*.")
 
     totales = db.totales_periodo(resumen, legal_min, tol)
 
@@ -410,6 +433,7 @@ def pagina_reporte():
         "Empleado": resumen["nombre"],
         "Fecha": pd.to_datetime(resumen["fecha"]).dt.strftime("%d/%m/%Y"),
         "Día": resumen["dia"],
+        "Sede": resumen["sede"],
         "Horario": resumen["horario_txt"].replace("", "No programado"),
         "Jornada": resumen["jornada_min"].map(fmt_hm),
         "Entrada": resumen["entrada_real"].map(hora),
@@ -447,20 +471,26 @@ def pagina_reporte():
 def pagina_horarios():
     st.title("Horario semanal")
     hoy = db.ahora().date()
-    ref = st.date_input("Semana del", value=db.lunes_de(hoy), format="DD/MM/YYYY", key="pub_sem")
+    c1, c2 = st.columns(2)
+    ref = c1.date_input("Semana del", value=db.lunes_de(hoy), format="DD/MM/YYYY", key="pub_sem")
+    sede_sel = c2.selectbox("Sede", ["Todas"] + sedes_activas(), key="pub_sede")
     lunes = db.lunes_de(ref)
-    st.caption(f"Semana del {lunes:%d/%m/%Y} al {lunes + timedelta(days=6):%d/%m/%Y}")
-    tabla = db.semana_todos(lunes)
+    st.caption(f"Semana del {lunes:%d/%m/%Y} al {lunes + timedelta(days=6):%d/%m/%Y}"
+               + (f" · {sede_sel}" if sede_sel != "Todas" else ""))
+    tabla = db.semana_todos(lunes, None if sede_sel == "Todas" else sede_sel)
     if tabla.empty:
-        st.info("Todavía no hay empleados.")
-        return
-    st.dataframe(tabla, hide_index=True, width="stretch")
+        st.info("Nadie programado en esa sede esa semana." if sede_sel != "Todas" else "Todavía no hay empleados.")
+    else:
+        st.dataframe(tabla, hide_index=True, width="stretch")
+        if sede_sel != "Todas":
+            st.caption("Entre paréntesis: días en otra sede.")
 
     st.subheader("Ver el mío")
-    nombre = st.selectbox("Empleado", tabla["Empleado"].tolist(), index=None, placeholder="Elige tu nombre",
+    emps = db.listar_empleados()
+    nombre = st.selectbox("Empleado", emps["nombre"].tolist(), index=None, placeholder="Elige tu nombre",
                           key="pub_emp")
     if nombre:
-        emp_id = int(db.listar_empleados().set_index("nombre").loc[nombre, "id"])
+        emp_id = int(emps.set_index("nombre").loc[nombre, "id"])
         tabla_semana(db.semana_empleado(emp_id, lunes), hoy)
 
 
@@ -473,11 +503,13 @@ def pagina_admin():
     if not pedir_admin():
         return
 
-    t_emp, t_hor, t_sem, t_reg, t_cfg = st.tabs(
-        ["👥 Empleados", "🕒 Horario base", "📅 Programar semana", "📋 Marcaciones", "⚙️ Configuración"]
+    t_emp, t_hor, t_sem, t_reg, t_sedes, t_cfg = st.tabs(
+        ["👥 Empleados", "🕒 Horario base", "📅 Programar semana", "📋 Marcaciones", "🏬 Sedes", "⚙️ Configuración"]
     )
     with t_emp:
         admin_empleados()
+    with t_sedes:
+        admin_sedes()
     with t_hor:
         admin_horarios()
     with t_sem:
@@ -488,16 +520,47 @@ def pagina_admin():
         admin_config()
 
 
+def admin_sedes():
+    st.caption("Las sedes se usan para programar en qué tienda trabaja cada persona cada día.")
+    with st.form("nueva_sede", clear_on_submit=True):
+        c1, c2 = st.columns([3, 1])
+        nombre = c1.text_input("Nueva sede", placeholder="Ej: Gourmet, Parque, Centro…")
+        if c2.form_submit_button("Agregar", width="stretch"):
+            try:
+                db.crear_sede(nombre)
+                sedes_activas.clear()
+                st.success(f"Sede **{nombre.strip()}** agregada.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+    activas = db.listar_sedes(solo_activas=True)
+    todas = db.listar_sedes(solo_activas=False)
+    if not todas:
+        st.info("No hay sedes todavía. Agrega al menos una.")
+        return
+    st.subheader("Sedes")
+    for nombre in todas:
+        c1, c2 = st.columns([3, 1])
+        act = nombre in activas
+        c1.markdown(f"**{nombre}**" + ("" if act else " (inactiva)"))
+        if c2.button("Desactivar" if act else "Activar", key=f"sede_{nombre}", width="stretch"):
+            db.activar_sede(nombre, not act)
+            sedes_activas.clear()
+            st.rerun()
+
+
 def admin_empleados():
     st.subheader("Nuevo empleado")
+    sedes = sedes_activas()
     with st.form("nuevo_emp", clear_on_submit=True):
-        c1, c2, c3 = st.columns([2, 1.5, 1])
+        c1, c2, c3, c4 = st.columns([2, 1.3, 1.2, 0.8])
         nombre = c1.text_input("Nombre completo")
         cargo = c2.text_input("Cargo (opcional)")
-        pin = c3.text_input("PIN (opcional)", max_chars=8)
+        sede = c3.selectbox("Sede base", [""] + sedes, format_func=lambda x: x or "—")
+        pin = c4.text_input("PIN", max_chars=8)
         if st.form_submit_button("Agregar", width="stretch"):
             try:
-                db.crear_empleado(nombre, cargo, pin)
+                db.crear_empleado(nombre, cargo, pin, sede)
                 st.success(f"Empleado **{nombre.strip()}** creado. Ahora asígnale un horario en la pestaña *Horarios*.")
             except ValueError as e:
                 st.error(str(e))
@@ -512,16 +575,20 @@ def admin_empleados():
 
     for r in empleados.itertuples():
         estado = "" if r.activo else " (inactivo)"
-        with st.expander(f"{r.nombre}{estado}"):
+        sede_txt = f" · {r.sede}" if r.sede else ""
+        with st.expander(f"{r.nombre}{sede_txt}{estado}"):
             with st.form(f"emp_{r.id}"):
-                c1, c2, c3 = st.columns([2, 1.5, 1])
+                c1, c2, c3, c4 = st.columns([2, 1.3, 1.2, 0.8])
                 n = c1.text_input("Nombre", value=r.nombre)
                 c = c2.text_input("Cargo", value=r.cargo or "")
-                p = c3.text_input("PIN", value=r.pin or "", max_chars=8)
+                ops = [""] + opciones_sede(r.sede or "")
+                sd = c3.selectbox("Sede base", ops, index=ops.index(r.sede or ""), format_func=lambda x: x or "—",
+                                  key=f"sede_emp_{r.id}")
+                p = c4.text_input("PIN", value=r.pin or "", max_chars=8)
                 a = st.checkbox("Activo (aparece en la lista para registrarse)", value=bool(r.activo))
                 b1, b2 = st.columns(2)
                 if b1.form_submit_button("Guardar", width="stretch"):
-                    db.actualizar_empleado(int(r.id), n, c, p, a)
+                    db.actualizar_empleado(int(r.id), n, c, p, a, sd)
                     st.success("Guardado.")
                     st.rerun()
                 if b2.form_submit_button("Eliminar definitivamente", width="stretch"):
@@ -539,13 +606,14 @@ def admin_empleados():
                     st.rerun()
 
 
-COLS_EDITOR = ["Trabaja", "Entrada 1", "Salida 1", "Entrada 2", "Salida 2"]
+COLS_EDITOR = ["Trabaja", "Sede", "Entrada 1", "Salida 1", "Entrada 2", "Salida 2"]
 
 
 def _config_editor(etiqueta_dia: str):
     return {
         etiqueta_dia: st.column_config.TextColumn(etiqueta_dia, disabled=True, width="medium"),
         "Trabaja": st.column_config.CheckboxColumn("Trabaja", width="small"),
+        "Sede": st.column_config.SelectboxColumn("Sede", options=sedes_activas(), width="small"),
         "Entrada 1": st.column_config.TimeColumn("Entrada 1", format="HH:mm", step=300),
         "Salida 1": st.column_config.TimeColumn("Salida 1", format="HH:mm", step=300),
         "Entrada 2": st.column_config.TimeColumn("Entrada 2 (partido)", format="HH:mm", step=300),
@@ -553,11 +621,12 @@ def _config_editor(etiqueta_dia: str):
     }
 
 
-def _fila_editor(etiqueta: str, h, etiqueta_col: str) -> dict:
+def _fila_editor(etiqueta: str, h, etiqueta_col: str, sede_defecto: str = "") -> dict:
     b = h.bloques if h else []
     return {
         etiqueta_col: etiqueta,
         "Trabaja": h is not None,
+        "Sede": (h.sede if h and h.sede else sede_defecto) or None,
         "Entrada 1": b[0][0] if len(b) > 0 else None,
         "Salida 1": b[0][1] if len(b) > 0 else None,
         "Entrada 2": b[1][0] if len(b) > 1 else None,
@@ -565,8 +634,8 @@ def _fila_editor(etiqueta: str, h, etiqueta_col: str) -> dict:
     }
 
 
-def _bloques_de_editor(fila) -> list | None:
-    """Convierte una fila del editor en lista de bloques (None = no trabaja)."""
+def _horario_de_editor(fila) -> "db.Horario | None":
+    """Convierte una fila del editor en Horario (None = no trabaja)."""
     if not bool(fila["Trabaja"]):
         return None
 
@@ -577,7 +646,10 @@ def _bloques_de_editor(fila) -> list | None:
             return v
         return pd.Timestamp(v).time()
 
-    return db.limpiar_bloques([(t(fila["Entrada 1"]), t(fila["Salida 1"])), (t(fila["Entrada 2"]), t(fila["Salida 2"]))])
+    bloques = db.limpiar_bloques([(t(fila["Entrada 1"]), t(fila["Salida 1"])), (t(fila["Entrada 2"]), t(fila["Salida 2"]))])
+    sede = fila.get("Sede")
+    sede = "" if sede is None or (isinstance(sede, float) and pd.isna(sede)) else str(sede)
+    return db.Horario(bloques, sede=sede) if bloques else None
 
 
 def editor_semana(clave: str, filas: list[dict], etiqueta_col: str) -> pd.DataFrame:
@@ -598,10 +670,12 @@ def relleno_rapido(clave: str):
         e2 = c3.time_input("Entrada 2", value=time(14, 0), key=f"{clave}_e2", step=timedelta(minutes=15))
         s2 = c4.time_input("Salida 2", value=time(21, 0), key=f"{clave}_s2", step=timedelta(minutes=15))
         partido = st.checkbox("Turno partido (usar los dos bloques)", value=True, key=f"{clave}_p")
-        dias = st.multiselect("Días", DIAS_ES, default=DIAS_ES[:6], key=f"{clave}_d")
+        c5, c6 = st.columns([1, 2])
+        sede = c5.selectbox("Sede", [""] + sedes_activas(), format_func=lambda x: x or "(sede base)", key=f"{clave}_sd")
+        dias = c6.multiselect("Días", DIAS_ES, default=DIAS_ES[:6], key=f"{clave}_d")
         if st.button("Aplicar a los días elegidos", key=f"{clave}_b", width="stretch"):
             bloques = [(e1, s1)] + ([(e2, s2)] if partido else [])
-            return bloques, [DIAS_ES.index(d) for d in dias]
+            return db.Horario(bloques, sede=sede), [DIAS_ES.index(d) for d in dias]
     return None
 
 
@@ -625,12 +699,14 @@ def admin_horarios():
     ver = st.session_state.get(f"ver_hor_{emp_id}", 0)
     prefill = st.session_state.pop(f"prefill_hor_{emp_id}", None)
 
+    sede_base = str(empleados.set_index("id").loc[emp_id, "sede"] or "")
+
     r = relleno_rapido(f"rr_hor_{emp_id}")
     if r:
-        bloques, idx = r
-        base = {d: (actual.get(d).bloques if actual.get(d) else None) for d in range(7)}
+        h_nuevo, idx = r
+        base = {d: actual.get(d) for d in range(7)}
         for d in idx:
-            base[d] = bloques
+            base[d] = h_nuevo
         st.session_state[f"prefill_hor_{emp_id}"] = base
         st.session_state[f"ver_hor_{emp_id}"] = ver + 1
         st.rerun()
@@ -647,15 +723,12 @@ def admin_horarios():
 
     filas = []
     for d in range(7):
-        if prefill is not None:
-            h = db.Horario(prefill[d]) if prefill[d] else None
-        else:
-            h = actual.get(d)
-        filas.append(_fila_editor(DIAS_ES[d], h, "Día"))
+        h = prefill[d] if prefill is not None else actual.get(d)
+        filas.append(_fila_editor(DIAS_ES[d], h, "Día", sede_base))
 
     editado = editor_semana(f"ed_hor_{emp_id}_{ver}", filas, "Día")
     if st.button("Guardar horario base", type="primary", width="stretch", key=f"g_hor_{emp_id}"):
-        nuevos = {d: _bloques_de_editor(editado.iloc[d]) for d in range(7)}
+        nuevos = {d: _horario_de_editor(editado.iloc[d]) for d in range(7)}
         db.guardar_horario(emp_id, nuevos)
         st.session_state[f"ver_hor_{emp_id}"] = ver + 1
         st.success(f"Horario base de {sel} guardado.")
@@ -663,7 +736,7 @@ def admin_horarios():
 
     if actual:
         st.caption("Horario base actual: " + " · ".join(
-            f"{DIAS_ES[d][:3]} {h.texto()}" for d, h in sorted(actual.items())
+            f"{DIAS_ES[d][:3]} {h.texto(con_sede=True)}" for d, h in sorted(actual.items())
         ) + f" — {fmt_hm(sum(h.jornada_min for h in actual.values()))}/semana")
     else:
         st.warning("Este empleado no tiene horario base. Sin horario, todo lo que trabaje se contará como extra.")
@@ -690,8 +763,9 @@ def admin_semana():
     st.markdown(f"**Semana del {lunes:%d/%m/%Y} al {domingo:%d/%m/%Y}** — {sel}")
 
     plantilla = db.horario_empleado(emp_id)
+    sede_base = str(empleados.set_index("id").loc[emp_id, "sede"] or "")
     turnos = db.turnos_rango(lunes, domingo, emp_id)
-    semana = db.semana_empleado(emp_id, lunes, plantilla, turnos)
+    semana = db.semana_empleado(emp_id, lunes, plantilla, turnos, sede_base)
     programada = any((emp_id, f) in turnos for f, _ in semana)
     if programada:
         st.info("Esta semana tiene programación propia. Los días marcados con ★ vienen de la programación; el resto, del horario base.")
@@ -704,18 +778,18 @@ def admin_semana():
 
     r = relleno_rapido(f"rr_sem_{clave}")
     if r:
-        bloques, idx = r
-        base = {f: (h.bloques if h else None) for f, h in semana}
+        h_nuevo, idx = r
+        base = dict(semana)
         for d in idx:
-            base[lunes + timedelta(days=d)] = bloques
+            base[lunes + timedelta(days=d)] = h_nuevo
         st.session_state[f"prefill_sem_{clave}"] = base
         st.session_state[f"ver_sem_{clave}"] = ver + 1
         st.rerun()
 
     b1, b2 = st.columns(2)
     if b1.button("Copiar la semana anterior", width="stretch", key=f"cp_{clave}"):
-        ant = db.semana_empleado(emp_id, lunes - timedelta(days=7), plantilla)
-        st.session_state[f"prefill_sem_{clave}"] = {f + timedelta(days=7): (h.bloques if h else None) for f, h in ant}
+        ant = db.semana_empleado(emp_id, lunes - timedelta(days=7), plantilla, sede_defecto=sede_base)
+        st.session_state[f"prefill_sem_{clave}"] = {f + timedelta(days=7): h for f, h in ant}
         st.session_state[f"ver_sem_{clave}"] = ver + 1
         st.rerun()
     if b2.button("Volver al horario base (borrar programación)", width="stretch", key=f"rm_{clave}",
@@ -728,13 +802,13 @@ def admin_semana():
     filas = []
     for fecha, h in semana:
         if prefill is not None:
-            h = db.Horario(prefill[fecha]) if prefill.get(fecha) else None
+            h = prefill.get(fecha)
         estrella = " ★" if (emp_id, fecha) in turnos else ""
-        filas.append(_fila_editor(f"{DIAS_ES[fecha.weekday()]} {fecha:%d/%m}{estrella}", h, "Fecha"))
+        filas.append(_fila_editor(f"{DIAS_ES[fecha.weekday()]} {fecha:%d/%m}{estrella}", h, "Fecha", sede_base))
 
     editado = editor_semana(f"ed_sem_{clave}_{ver}", filas, "Fecha")
     if st.button("Guardar programación de la semana", type="primary", width="stretch", key=f"g_sem_{clave}"):
-        nuevos = {lunes + timedelta(days=i): _bloques_de_editor(editado.iloc[i]) for i in range(7)}
+        nuevos = {lunes + timedelta(days=i): _horario_de_editor(editado.iloc[i]) for i in range(7)}
         db.guardar_semana(emp_id, lunes, nuevos)
         st.session_state[f"ver_sem_{clave}"] = ver + 1
         st.success(f"Semana del {lunes:%d/%m} programada para {sel}.")
@@ -742,7 +816,8 @@ def admin_semana():
 
     st.divider()
     st.subheader("Vista de toda la semana")
-    tabla = db.semana_todos(lunes)
+    sede_v = st.selectbox("Sede", ["Todas"] + sedes_activas(), key="adm_sede_vista")
+    tabla = db.semana_todos(lunes, None if sede_v == "Todas" else sede_v)
     if tabla.empty:
         st.caption("Sin empleados activos.")
     else:
@@ -812,6 +887,7 @@ def admin_registros():
         nota = st.text_input("Nota (motivo)", placeholder="Ej: olvidó marcar, celular sin batería")
         if st.form_submit_button("Agregar", width="stretch"):
             db.crear_registro(nombres[e], t, datetime.combine(f, h), "", nota or "Registro manual")
+            # (la sede se toma del horario del dia al calcular el reporte)
             st.success("Marcación agregada.")
             st.rerun()
 

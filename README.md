@@ -22,14 +22,19 @@ Corre en **Streamlit Community Cloud** y guarda los datos y fotos en **Supabase*
    (turnos partidos ocasionales, cambio de día libre…), se programa ahí por fechas.
    Los días que no se programen siguen el horario base. Botones para copiar la
    semana anterior o volver al horario base.
-5. **Configuración**: tolerancia en minutos y si el tiempo antes de la entrada
-   cuenta como trabajado.
+5. **Sedes**: las tiendas (Gourmet, Parque, …). Cada empleado tiene una **sede
+   base** y en el horario base o en la programación semanal se puede poner una
+   sede distinta cada día (hoy en Gourmet, mañana en Parque).
+6. **Configuración**: tolerancia, jornada legal semanal/mensual y si el tiempo
+   antes de la entrada cuenta como trabajado.
 
 ## Horario semanal (para los empleados)
 
 - En **Registrar**, al elegir su nombre, cada uno ve **Mi horario de esta semana**
   (y la próxima).
-- La página **Horario semanal** muestra el cuadro completo de todos, por semana.
+- La página **Horario semanal** muestra el cuadro completo de todos, por semana,
+  con filtro por sede (cada tienda ve a su gente; los días en otra sede salen
+  entre paréntesis).
 
 ## Registro diario
 
