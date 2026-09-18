@@ -313,7 +313,8 @@ def tabla_semana(semana, hoy: date | None = None):
 
 def mostrar_resumen_hoy(emp_id: int, nombre: str, fecha: date, hor):
     marcas = [(m["tipo"], m["fecha_hora"]) for m in db.registros_del_dia(emp_id, fecha)]
-    r = db.resumir_dia(emp_id, nombre, fecha, marcas, hor, db.tolerancia_min(), db.contar_entrada_anticipada())
+    r = db.resumir_dia(emp_id, nombre, fecha, marcas, hor, db.tolerancia_min(), db.contar_entrada_anticipada(),
+                       db.gracia_salida_min())
     partes = []
     if r.tardanza_min:
         partes.append(f"⏰ Llegada tarde: **{fmt_hm(r.tardanza_min)}**")
@@ -340,9 +341,15 @@ def pagina_reporte():
 
     hoy = db.ahora().date()
     c0, c1, c2 = st.columns([1.1, 1.2, 1.3])
-    modo = c0.selectbox("Período", [db.PERIODO_MES, db.PERIODO_QUINCENA, db.PERIODO_RANGO],
-                        format_func=lambda m: {"mes": "Mes", "quincena": "Quincena", "rango": "Rango de fechas"}[m])
-    if modo == db.PERIODO_MES:
+    modo = c0.selectbox("Período", [db.PERIODO_SEMANA, db.PERIODO_MES, db.PERIODO_QUINCENA, db.PERIODO_RANGO],
+                        index=1,
+                        format_func=lambda m: {"semana": "Semana", "mes": "Mes", "quincena": "Quincena",
+                                               "rango": "Rango de fechas"}[m])
+    if modo == db.PERIODO_SEMANA:
+        ref = c1.date_input("Semana", value=db.lunes_de(hoy), format="DD/MM/YYYY", help="Elige cualquier día de la semana")
+        desde, hasta = db.rango_periodo(modo, ref)
+        titulo = f"Semana del {desde:%d/%m/%Y}"
+    elif modo == db.PERIODO_MES:
         ref = c1.date_input("Mes", value=hoy.replace(day=1), format="DD/MM/YYYY", help="Elige cualquier día del mes")
         desde, hasta = db.rango_periodo(modo, ref)
         titulo = f"Mes {desde:%m/%Y}"
@@ -374,7 +381,8 @@ def pagina_reporte():
     st.caption(
         f"**{titulo}** ({desde:%d/%m} – {hasta:%d/%m}) · Jornada legal del período: **{fmt_hm(legal_min)}** "
         f"(base {db.horas_semana_legal():g} h/semana = {db.horas_mes_legal():g} h/mes, ajustable en Configuración). "
-        "Extra = horas trabajadas en el período − jornada legal."
+        "Extra = horas trabajadas en el período − jornada legal. "
+        f"Los primeros {db.gracia_salida_min()} min después de la salida programada son parte del turno."
     )
 
     resumen = db.reporte_extras(desde, hasta, emp_id, sede_f)
@@ -420,11 +428,14 @@ def pagina_reporte():
 
     # --- Horas por semana -------------------------------------------------------
     st.subheader("Horas trabajadas por semana")
-    st.caption(f"Referencia: {db.horas_semana_legal():g} h por semana. Las semanas se identifican por su lunes.")
+    st.caption(f"Referencia: {db.horas_semana_legal():g} h por semana. Entre paréntesis, lo que sobra (+) o falta (−) "
+               "respecto a esa jornada. Las semanas se identifican por su lunes; una semana cortada por el "
+               "inicio o fin del período se ve incompleta.")
     sem = db.horas_por_semana(resumen)
     sem_vista = sem.copy()
+    legal_sem = int(round(db.horas_semana_legal() * 60))
     for c in sem_vista.columns[1:]:
-        sem_vista[c] = sem_vista[c].map(fmt_hm)
+        sem_vista[c] = sem_vista[c].map(lambda m: db.fmt_semana(m, legal_sem, tol))
     st.dataframe(sem_vista, hide_index=True, width="stretch")
 
     # --- Detalle por dia ------------------------------------------------------
@@ -904,6 +915,11 @@ def admin_config():
             "Contar como extra el tiempo ANTES de la hora de entrada", value=db.contar_entrada_anticipada(),
             help="Si está desmarcado, solo cuenta el tiempo después de la hora de salida programada.",
         )
+        gracia = st.number_input(
+            "Gracia después de la salida (minutos)", min_value=0, max_value=180, value=db.gracia_salida_min(),
+            help="Minutos después de la hora de salida programada que todavía son parte del turno y NO suman. "
+                 "Ej.: turno hasta 14:00 con 40 min → hasta 14:40 no cuenta; si sale a 15:00 suman 20 min.",
+        )
         c1, c2 = st.columns(2)
         h_sem = c1.number_input(
             "Jornada legal semanal (horas)", min_value=1.0, max_value=60.0, value=float(db.horas_semana_legal()),
@@ -919,6 +935,7 @@ def admin_config():
             db.set_config("contar_entrada_anticipada", "1" if antes else "0")
             db.set_config("horas_semana_legal", f"{h_sem:g}")
             db.set_config("horas_mes_legal", f"{h_mes:g}")
+            db.set_config("gracia_salida_min", int(gracia))
             st.success("Reglas guardadas.")
 
     st.subheader("Contraseña de administrador")

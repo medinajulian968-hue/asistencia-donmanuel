@@ -49,6 +49,7 @@ CONFIG_DEFAULT = {
     "contar_entrada_anticipada": "0",  # 1 = llegar antes de la hora tambien suma extra
     "horas_semana_legal": "42",        # jornada maxima legal semanal (Colombia: 42 h desde jul-2026)
     "horas_mes_legal": "210",          # equivalente mensual usado en nomina (42 x 5 semanas de 30 dias)
+    "gracia_salida_min": "40",         # minutos despues de la salida programada que aun son parte del turno
 }
 
 
@@ -175,6 +176,10 @@ def horas_semana_legal() -> float:
 
 def horas_mes_legal() -> float:
     return _config_float("horas_mes_legal")
+
+
+def gracia_salida_min() -> int:
+    return int(_config_float("gracia_salida_min"))
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +692,7 @@ def resumir_dia(
     hor: Horario | None,
     tolerancia: int,
     contar_antes: bool,
+    gracia: int = 0,
 ) -> ResumenDia:
     """
     Calcula el resumen de un dia a partir de las marcaciones.
@@ -695,6 +701,10 @@ def resumir_dia(
       - Las marcaciones se emparejan entrada+salida en bloques (sirve para
         turno partido: entrada, salida, entrada, salida...).
       - Trabajado = suma de los bloques. Los descansos no cuentan.
+      - Gracia de salida: los minutos entre la salida programada y
+        salida + gracia siguen siendo parte del turno (no suman). Lo que pase
+        de ahi si cuenta. Ej. turno hasta 14:00 con gracia 40: salir 14:30
+        no suma nada; salir 15:00 suma 20 min.
       - Extra = trabajado - jornada programada (si supera la tolerancia).
       - Tardanza = cada bloque trabajado se compara con el bloque programado
         correspondiente (1o con 1o, 2o con 2o).
@@ -724,9 +734,16 @@ def resumir_dia(
             extra = trabajados
             obs.append("Día no programado")
     else:
-        # Inicio programado de cada bloque (en datetime)
+        # Inicio y fin programados de cada bloque (en datetime)
         inicios = [datetime.combine(fecha, b[0]) for b in hor.bloques]
-        recortados = []
+        fines = []
+        for b in hor.bloques:
+            f = datetime.combine(fecha, b[1])
+            if b[1] <= b[0]:
+                f += timedelta(days=1)
+            fines.append(f)
+
+        trabajados = 0
         for i, (e, s_) in enumerate(bloques):
             prog = inicios[i] if i < len(inicios) else None
             if prog is not None:
@@ -734,8 +751,16 @@ def resumir_dia(
                     tardanza += _aplicar_tolerancia(_minutos(e - prog), tolerancia)
                 elif not contar_antes:
                     e = min(prog, s_)
-            recortados.append((e, s_))
-        trabajados = sum(_minutos(s_ - e) for e, s_ in recortados)
+            # El ultimo bloque real se compara con el fin del ultimo programado
+            # (si olvidaron marcar el descanso, el bloque unico abarca todo el dia)
+            es_ultimo = i == len(bloques) - 1
+            fin = fines[-1] if es_ultimo else (fines[i] if i < len(fines) else None)
+            if fin is not None and gracia > 0 and s_ > fin:
+                limite = fin + timedelta(minutes=gracia)
+                trabajados += _minutos(fin - e) if fin > e else 0
+                trabajados += _minutos(s_ - limite) if s_ > limite else 0
+            else:
+                trabajados += _minutos(s_ - e)
 
         if hor.partido and not sin_salida and 0 < len(bloques) < len(hor.bloques):
             obs.append("Faltó marcar el descanso")
@@ -777,6 +802,7 @@ def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None,
 
     tol = tolerancia_min()
     antes = contar_entrada_anticipada()
+    gracia = gracia_salida_min()
     turnos = turnos_rango(desde, hasta, empleado_id)
     sedes_emp = {int(e.id): (e.sede or "") for e in listar_empleados(solo_activos=False).itertuples()}
     horarios_cache: dict[int, dict[int, Horario]] = {}
@@ -788,7 +814,7 @@ def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None,
         fecha = date.fromisoformat(fecha_txt)
         hor = horario_del_dia(int(emp_id), fecha, horarios_cache[emp_id], turnos, sedes_emp.get(int(emp_id), ""))
         marcas = [(r.tipo, r.fecha_hora.to_pydatetime()) for r in grupo.itertuples()]
-        r = resumir_dia(int(emp_id), nombre, fecha, marcas, hor, tol, antes)
+        r = resumir_dia(int(emp_id), nombre, fecha, marcas, hor, tol, antes, gracia)
         if not r.sede:  # dia sin horario: la sede que quedo en la marcacion, o la base
             r.sede = next((x for x in grupo["sede"] if x), "") or sedes_emp.get(int(emp_id), "")
         if sede and r.sede != sede:
@@ -806,13 +832,17 @@ def reporte_extras(desde: date, hasta: date, empleado_id: int | None = None,
 # LIQUIDACION POR PERIODO (mes / quincena / rango)
 # ---------------------------------------------------------------------------
 
+PERIODO_SEMANA = "semana"
 PERIODO_MES = "mes"
 PERIODO_QUINCENA = "quincena"
 PERIODO_RANGO = "rango"
 
 
 def rango_periodo(modo: str, ref: date, quincena: int = 1) -> tuple[date, date]:
-    """Fechas (desde, hasta) del mes o la quincena que contiene a `ref`."""
+    """Fechas (desde, hasta) de la semana, el mes o la quincena que contiene a `ref`."""
+    if modo == PERIODO_SEMANA:
+        lu = lunes_de(ref)
+        return lu, lu + timedelta(days=6)
     primero = ref.replace(day=1)
     ultimo = (primero + timedelta(days=32)).replace(day=1) - timedelta(days=1)
     if modo == PERIODO_QUINCENA:
@@ -827,6 +857,8 @@ def jornada_legal_min(modo: str, desde: date, hasta: date) -> int:
     rango = horas_mes x dias / 30.
     """
     mes = horas_mes_legal() * 60
+    if modo == PERIODO_SEMANA:
+        return int(round(horas_semana_legal() * 60))
     if modo == PERIODO_MES:
         return int(round(mes))
     if modo == PERIODO_QUINCENA:
@@ -865,6 +897,19 @@ def horas_por_semana(resumen: pd.DataFrame) -> pd.DataFrame:
     piv = piv.reindex(sorted(piv.columns), axis=1)
     piv.columns = [f"Sem {c:%d/%m}" for c in piv.columns]
     return piv.reset_index().rename(columns={"nombre": "Empleado"})
+
+
+def fmt_semana(minutos, legal_semana_min: int, tolerancia: int) -> str:
+    """'48h 00m (+6h 00m)' si supera la jornada semanal, '36h 00m (−6h 00m)' si falta."""
+    minutos = int(minutos)
+    if minutos == 0:
+        return "—"
+    dif = minutos - legal_semana_min
+    if dif > tolerancia:
+        return f"{fmt_hm(minutos)} (+{fmt_hm(dif)})"
+    if -dif > tolerancia:
+        return f"{fmt_hm(minutos)} (−{fmt_hm(-dif)})"
+    return fmt_hm(minutos)
 
 
 def fmt_hm(minutos) -> str:

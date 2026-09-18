@@ -55,7 +55,12 @@ En el celular conviene guardar la dirección en la pantalla de inicio
   convención de nómina (mes de 30 días = 5 semanas). Quincena = 105 h. Un rango de
   fechas cualquiera se prorratea (210 × días / 30). Ambos valores se ajustan en
   *Configuración*.
-- Así, una semana de 48 h y otra de 36 h se compensan dentro del mes.
+- Así, una semana de 48 h y otra de 36 h se compensan dentro del mes; y dentro de
+  la semana, un día de 6 h y otro de 8 h se compensan entre sí (lo que importa es
+  el total del período, no el día a día).
+- Con el período **Semana** la jornada legal es 42 h (7 h × 6 días, un día de
+  descanso); la tabla *Horas por semana* muestra en cada semana lo que sobra (+) o
+  falta (−) respecto a 42 h.
 - Si trabajó menos que la jornada legal, aparece como **Faltante**.
 
 Cómo se cuentan las horas trabajadas:
@@ -69,14 +74,17 @@ Cómo se cuentan las horas trabajadas:
 - **Tardanza** = minutos entre la hora de entrada programada de cada bloque y la
   entrada real (con tolerancia).
 - **Tolerancia**: si la diferencia no supera los minutos de tolerancia, no cuenta.
+- **Gracia de salida** (40 min por defecto, en Configuración): los minutos después
+  de la salida programada hasta salida + gracia siguen siendo parte del turno y no
+  suman. Turno hasta 14:00 → hasta 14:40 no cuenta; si sale a 15:00 suman 20 min.
 
 El detalle por día muestra además *Sobre horario* (lo trabajado por encima del
 horario de ese día) como referencia; no es la cifra oficial de extras.
 
 ## Reporte
 
-**Reporte de extras** (requiere contraseña de administrador): elige **Mes**,
-**Quincena** o **Rango**; liquidación del período por empleado (trabajadas, jornada
+**Reporte de extras** (requiere contraseña de administrador): elige **Semana**
+(42 h), **Mes**, **Quincena** o **Rango**; liquidación del período por empleado (trabajadas, jornada
 legal, extra, faltante, tardanzas), horas por semana, detalle por día, fotos de
 cada marcación y descarga a Excel (resumen por día, liquidación del período,
 marcaciones).
