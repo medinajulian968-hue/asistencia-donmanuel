@@ -94,6 +94,14 @@ marcaciones).
 En **Administración → Marcaciones** se puede editar la hora o el tipo de una
 marcación, eliminarla, o agregar una manual (por ejemplo si alguien olvidó marcar).
 
+## Limpieza de fotos
+
+Supabase gratis guarda 1 GB de fotos (~1 año con 23 personas). En
+**Administración → Configuración → Limpieza de fotos** se ve cuánto ocupa cada
+mes y se pueden borrar las fotos de meses ya liquidados. Las marcaciones y las
+horas se conservan; solo desaparece la imagen. Recomendado: descargar el Excel
+del mes y luego limpiar.
+
 ## Zona horaria
 
 Las horas se guardan en la zona `TIMEZONE` de los Secrets (por defecto

@@ -513,15 +513,48 @@ def guardar_foto(empleado_id: int, tipo: str, momento: datetime, contenido: byte
 
     img = Image.open(io.BytesIO(contenido))
     img = ImageOps.exif_transpose(img).convert("RGB")
-    img.thumbnail((900, 900))
+    img.thumbnail((640, 640))  # suficiente para reconocer la cara; ~30 KB por foto
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=82, optimize=True)
+    img.save(buf, "JPEG", quality=76, optimize=True)
 
     ruta = f"{momento.strftime('%Y-%m')}/{momento.strftime('%Y%m%d_%H%M%S')}_emp{empleado_id}_{tipo}.jpg"
     cliente().storage.from_(BUCKET_FOTOS).upload(
         ruta, buf.getvalue(), {"content-type": "image/jpeg", "upsert": "true"}
     )
     return ruta
+
+
+def meses_con_fotos() -> list[dict]:
+    """Meses (carpetas AAAA-MM del bucket) con cantidad de fotos y tamaño aproximado."""
+    st_ = cliente().storage.from_(BUCKET_FOTOS)
+    out = []
+    for carpeta in st_.list("", {"limit": 1000}):
+        nombre = carpeta.get("name", "")
+        if len(nombre) != 7 or nombre[4] != "-":
+            continue
+        archivos = st_.list(nombre, {"limit": 10000})
+        cant = len(archivos)
+        peso = sum((a.get("metadata") or {}).get("size", 0) for a in archivos)
+        out.append({"mes": nombre, "fotos": cant, "mb": round(peso / 1024 / 1024, 1)})
+    return sorted(out, key=lambda x: x["mes"])
+
+
+def borrar_fotos_mes(mes: str) -> int:
+    """
+    Borra las fotos del bucket de un mes (AAAA-MM) y deja las marcaciones sin
+    foto. Devuelve cuantas se borraron. Las horas y marcaciones no se tocan.
+    """
+    st_ = cliente().storage.from_(BUCKET_FOTOS)
+    archivos = st_.list(mes, {"limit": 10000})
+    rutas = [f"{mes}/{a['name']}" for a in archivos if a.get("name")]
+    for i in range(0, len(rutas), 100):
+        st_.remove(rutas[i:i + 100])
+    # Marcaciones de ese mes -> foto vacia (para que el reporte diga "sin foto")
+    primero = f"{mes}-01"
+    y, m = int(mes[:4]), int(mes[5:7])
+    ultimo = (date(y + (m == 12), (m % 12) + 1, 1) - timedelta(days=1)).strftime("%Y-%m-%d")
+    cliente().table("registros").update({"foto": ""}).gte("fecha", primero).lte("fecha", ultimo).execute()
+    return len(rutas)
 
 
 def leer_foto(ruta: str) -> bytes | None:

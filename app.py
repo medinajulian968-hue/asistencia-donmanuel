@@ -951,6 +951,47 @@ def admin_config():
                 db.cambiar_password_admin(p1)
                 st.success("Contraseña cambiada.")
 
+    st.subheader("Limpieza de fotos")
+    st.caption(
+        "Supabase gratis guarda hasta 1 GB de fotos. Una vez liquidado un mes, puedes borrar sus fotos: "
+        "las marcaciones y las horas **se conservan**, solo se elimina la imagen. Esto no se puede deshacer."
+    )
+    try:
+        meses = db.meses_con_fotos()
+    except Exception as e:
+        meses = []
+        st.warning(f"No se pudo leer el almacén de fotos: {e}")
+    if not meses:
+        st.caption("No hay fotos guardadas.")
+    else:
+        total_mb = sum(m["mb"] for m in meses)
+        st.dataframe(pd.DataFrame(meses).rename(columns={"mes": "Mes", "fotos": "Fotos", "mb": "MB"}),
+                     hide_index=True, width="stretch")
+        st.progress(min(total_mb / 1024, 1.0), text=f"Usado: {total_mb:.0f} MB de 1024 MB")
+        mes_actual = db.ahora().strftime("%Y-%m")
+        borrables = [m["mes"] for m in meses if m["mes"] < mes_actual]
+        if not borrables:
+            st.caption("Solo hay fotos del mes en curso; no se pueden borrar todavía.")
+        else:
+            c1, c2 = st.columns([2, 1])
+            mes_sel = c1.selectbox("Mes a limpiar", borrables, index=0, key="mes_limpiar",
+                                   help="Solo meses anteriores al actual.")
+            if c2.button("Borrar fotos del mes", width="stretch", key="btn_limpiar"):
+                st.session_state["confirmar_limpiar"] = mes_sel
+            if st.session_state.get("confirmar_limpiar") == mes_sel:
+                n = next(m["fotos"] for m in meses if m["mes"] == mes_sel)
+                st.warning(f"Se van a borrar **{n} fotos** de **{mes_sel}**. Las marcaciones quedan. ¿Seguro?")
+                k1, k2 = st.columns(2)
+                if k1.button("Sí, borrar", type="primary", width="stretch", key="limpiar_si"):
+                    borradas = db.borrar_fotos_mes(mes_sel)
+                    foto_bytes.clear()
+                    st.session_state.pop("confirmar_limpiar", None)
+                    st.success(f"Listo: {borradas} fotos de {mes_sel} eliminadas.")
+                    st.rerun()
+                if k2.button("Cancelar", width="stretch", key="limpiar_no"):
+                    st.session_state.pop("confirmar_limpiar", None)
+                    st.rerun()
+
     st.subheader("Datos")
     st.caption(f"Los datos y las fotos están en Supabase. Zona horaria: `{db.zona().key}`.")
     if st.button("Cerrar sesión de administrador", width="stretch"):
