@@ -980,17 +980,25 @@ def admin_config():
                 st.session_state["confirmar_limpiar"] = mes_sel
             if st.session_state.get("confirmar_limpiar") == mes_sel:
                 n = next(m["fotos"] for m in meses if m["mes"] == mes_sel)
-                st.warning(f"Se van a borrar **{n} fotos** de **{mes_sel}**. Las marcaciones quedan. ¿Seguro?")
-                k1, k2 = st.columns(2)
-                if k1.button("Sí, borrar", type="primary", width="stretch", key="limpiar_si"):
-                    borradas = db.borrar_fotos_mes(mes_sel)
-                    foto_bytes.clear()
+                st.warning(f"Se van a borrar **{n} fotos** de **{mes_sel}**. Las marcaciones quedan. "
+                           "Esto no se puede deshacer.")
+                with st.form("form_limpiar", clear_on_submit=True):
+                    pwd = st.text_input("Confirma con la contraseña de administrador", type="password")
+                    k1, k2 = st.columns(2)
+                    ok = k1.form_submit_button("Sí, borrar", type="primary", width="stretch")
+                    cancelar = k2.form_submit_button("Cancelar", width="stretch")
+                if cancelar:
                     st.session_state.pop("confirmar_limpiar", None)
-                    st.success(f"Listo: {borradas} fotos de {mes_sel} eliminadas.")
                     st.rerun()
-                if k2.button("Cancelar", width="stretch", key="limpiar_no"):
-                    st.session_state.pop("confirmar_limpiar", None)
-                    st.rerun()
+                if ok:
+                    if not db.verificar_admin(pwd):
+                        st.error("Contraseña incorrecta. No se borró nada.")
+                    else:
+                        borradas = db.borrar_fotos_mes(mes_sel)
+                        foto_bytes.clear()
+                        st.session_state.pop("confirmar_limpiar", None)
+                        st.success(f"Listo: {borradas} fotos de {mes_sel} eliminadas.")
+                        st.rerun()
 
     st.subheader("Datos")
     st.caption(f"Los datos y las fotos están en Supabase. Zona horaria: `{db.zona().key}`.")
