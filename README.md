@@ -12,8 +12,8 @@ Corre en **Streamlit Community Cloud** y guarda los datos y fotos en **Supabase*
 
 1. Entra a **Administración** (contraseña inicial: `admin` — cámbiala en la pestaña
    *Configuración*).
-2. **Empleados**: crea a cada compañero. El PIN es opcional pero recomendado para
-   que nadie marque por otro.
+2. **Empleados**: crea a cada compañero con su **clave personal** (obligatoria,
+   4–8 caracteres). Sin clave no puede marcar; así nadie marca por otro.
 3. **Horario base**: para cada persona, el horario que se repite cada semana. Cada
    día puede tener **un bloque** (turno corrido, ej. 7:00–15:00) o **dos bloques**
    (turno partido, ej. 8:00–12:00 y 14:00–21:00). Hay un *relleno rápido* y se
@@ -39,7 +39,7 @@ Corre en **Streamlit Community Cloud** y guarda los datos y fotos en **Supabase*
 ## Registro diario
 
 En **Registrar**: elegir el nombre → la app sugiere *Entrada* o *Salida* según el
-último movimiento → escribir el PIN (si tiene) → **📷 Tomar foto** (abre la cámara
+último movimiento → escribir su **clave** → **📷 Tomar foto** (abre la cámara
 del celular) → **Confirmar**. Al confirmar muestra la hora registrada y, si aplica,
 la tardanza o las horas extra del día.
 

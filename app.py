@@ -223,10 +223,20 @@ def pagina_registrar():
         horizontal=True,
     )
 
-    if emp["pin"]:
-        pin = st.text_input("Tu PIN", type="password", max_chars=8, placeholder="PIN asignado por el administrador")
-    else:
-        pin = ""
+    # --- Clave del colaborador (obligatoria) ---------------------------
+    if not emp["pin"]:
+        st.error("No tienes clave asignada. Pídele al administrador que te asigne una en *Administración → Empleados* "
+                 "para poder marcar.")
+        return
+
+    pin = st.text_input("Tu clave", type="password", max_chars=8, placeholder="Escribe tu clave personal",
+                        key=f"pin_{emp_id}")
+    if not pin:
+        st.info("Escribe tu clave para poder tomar la foto.")
+        return
+    if pin.strip() != str(emp["pin"]).strip():
+        st.error("Clave incorrecta.")
+        return
 
     # --- Foto ----------------------------------------------------------
     # Se usa el selector de archivos (y no st.camera_input) porque iPhone y
@@ -568,9 +578,11 @@ def admin_empleados():
         nombre = c1.text_input("Nombre completo")
         cargo = c2.text_input("Cargo (opcional)")
         sede = c3.selectbox("Sede base", [""] + sedes, format_func=lambda x: x or "—")
-        pin = c4.text_input("PIN", max_chars=8)
+        pin = c4.text_input("Clave", max_chars=8, help="Obligatoria: 4 a 8 caracteres. Sin clave no puede marcar.")
         if st.form_submit_button("Agregar", width="stretch"):
             try:
+                if len(pin.strip()) < 4:
+                    raise ValueError("La clave es obligatoria y debe tener al menos 4 caracteres.")
                 db.crear_empleado(nombre, cargo, pin, sede)
                 st.success(f"Empleado **{nombre.strip()}** creado. Ahora asígnale un horario en la pestaña *Horarios*.")
             except ValueError as e:
@@ -587,7 +599,10 @@ def admin_empleados():
     for r in empleados.itertuples():
         estado = "" if r.activo else " (inactivo)"
         sede_txt = f" · {r.sede}" if r.sede else ""
-        with st.expander(f"{r.nombre}{sede_txt}{estado}"):
+        sin_clave = "" if r.pin else " ⚠️ sin clave"
+        with st.expander(f"{r.nombre}{sede_txt}{estado}{sin_clave}"):
+            if not r.pin:
+                st.warning("Este empleado no tiene clave: no podrá marcar hasta que le asignes una.")
             with st.form(f"emp_{r.id}"):
                 c1, c2, c3, c4 = st.columns([2, 1.3, 1.2, 0.8])
                 n = c1.text_input("Nombre", value=r.nombre)
@@ -595,10 +610,13 @@ def admin_empleados():
                 ops = [""] + opciones_sede(r.sede or "")
                 sd = c3.selectbox("Sede base", ops, index=ops.index(r.sede or ""), format_func=lambda x: x or "—",
                                   key=f"sede_emp_{r.id}")
-                p = c4.text_input("PIN", value=r.pin or "", max_chars=8)
+                p = c4.text_input("Clave", value=r.pin or "", max_chars=8)
                 a = st.checkbox("Activo (aparece en la lista para registrarse)", value=bool(r.activo))
                 b1, b2 = st.columns(2)
                 if b1.form_submit_button("Guardar", width="stretch"):
+                    if len(p.strip()) < 4:
+                        st.error("La clave debe tener al menos 4 caracteres.")
+                        st.stop()
                     db.actualizar_empleado(int(r.id), n, c, p, a, sd)
                     st.success("Guardado.")
                     st.rerun()
