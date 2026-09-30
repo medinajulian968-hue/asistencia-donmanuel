@@ -17,11 +17,12 @@ Corre en **Streamlit Community Cloud** y guarda los datos y fotos en **Supabase*
 3. **Horario base**: para cada persona, el horario que se repite cada semana. Cada
    día puede tener **un bloque** (turno corrido, ej. 7:00–15:00) o **dos bloques**
    (turno partido, ej. 8:00–12:00 y 14:00–21:00). Hay un *relleno rápido* y se
-   puede copiar el horario de otro compañero.
+   puede copiar el horario de otro compañero, o **copiar el horario de un día a
+   otros** (llenas el lunes y lo copias a martes, miércoles, etc.).
 4. **Programar semana**: cuando una semana concreta es distinta del horario base
    (turnos partidos ocasionales, cambio de día libre…), se programa ahí por fechas.
-   Los días que no se programen siguen el horario base. Botones para copiar la
-   semana anterior o volver al horario base.
+   Los días que no se programen siguen el horario base. Botones para copiar un día
+   a otros, copiar la semana anterior o volver al horario base.
 5. **Sedes**: las tiendas (Gourmet, Parque, …). Cada empleado tiene una **sede
    base** y en el horario base o en la programación semanal se puede poner una
    sede distinta cada día (hoy en Gourmet, mañana en Parque).
@@ -76,7 +77,8 @@ Cómo se cuentan las horas trabajadas:
 - **Tolerancia**: si la diferencia no supera los minutos de tolerancia, no cuenta.
 - **Gracia de salida** (40 min por defecto, en Configuración): los minutos después
   de la salida programada hasta salida + gracia siguen siendo parte del turno y no
-  suman. Turno hasta 14:00 → hasta 14:40 no cuenta; si sale a 15:00 suman 20 min.
+  suman. Con jornada de 7 h, las extras empiezan a contar a partir de **7 h 40 min**:
+  quien esté 8 h en el sitio suma 20 min de extra; 8 h 30 min suma 50 min.
 
 El detalle por día muestra además *Sobre horario* (lo trabajado por encima del
 horario de ese día) como referencia; no es la cifra oficial de extras.

@@ -673,6 +673,11 @@ def _horario_de_editor(fila) -> "db.Horario | None":
             return None
         if isinstance(v, time):
             return v
+        if isinstance(v, str):
+            try:
+                return time.fromisoformat(v)
+            except ValueError:
+                pass
         return pd.Timestamp(v).time()
 
     bloques = db.limpiar_bloques([(t(fila["Entrada 1"]), t(fila["Salida 1"])), (t(fila["Entrada 2"]), t(fila["Salida 2"]))])
@@ -688,6 +693,38 @@ def editor_semana(clave: str, filas: list[dict], etiqueta_col: str) -> pd.DataFr
         df, key=clave, hide_index=True, width="stretch", num_rows="fixed",
         column_config=_config_editor(etiqueta_col),
     )
+
+
+def estado_editor(clave_editor: str, filas_base: list[dict]) -> list[dict]:
+    """
+    Filas que el usuario tiene AHORA en la tabla: las filas base con las
+    ediciones que aun no ha guardado. Asi 'copiar día' y 'relleno rápido'
+    respetan lo que acaba de escribir.
+    """
+    estado = st.session_state.get(clave_editor)
+    filas = [dict(f) for f in filas_base]
+    if isinstance(estado, dict):
+        for idx, cambios in (estado.get("edited_rows") or {}).items():
+            i = int(idx)
+            if 0 <= i < len(filas):
+                filas[i].update(cambios)
+    return filas
+
+
+def copiar_dia_ui(clave: str, etiquetas: list[str]):
+    """
+    Selector para copiar el horario de un día a otros.
+    Devuelve (indice_origen, [indices_destino]) si se pulsó Copiar.
+    """
+    with st.expander("Copiar el horario de un día a otros"):
+        st.caption("Útil cuando varios días tienen el mismo turno: llena uno y cópialo a los demás.")
+        c1, c2 = st.columns([1, 2])
+        origen = c1.selectbox("Copiar el día", range(7), format_func=lambda i: etiquetas[i], key=f"{clave}_or")
+        destinos = c2.multiselect("a estos días", range(7), format_func=lambda i: etiquetas[i], key=f"{clave}_de",
+                                  placeholder="Elige uno o varios días")
+        if st.button("Copiar", key=f"{clave}_b", width="stretch", disabled=not destinos):
+            return origen, [d for d in destinos if d != origen]
+    return None
 
 
 def relleno_rapido(clave: str):
@@ -726,19 +763,37 @@ def admin_horarios():
     )
 
     ver = st.session_state.get(f"ver_hor_{emp_id}", 0)
-    prefill = st.session_state.pop(f"prefill_hor_{emp_id}", None)
+    prefill = st.session_state.get(f"prefill_hor_{emp_id}")
 
     sede_base = str(empleados.set_index("id").loc[emp_id, "sede"] or "")
+
+    # Lo que hay ahora en la tabla (guardado + relleno pendiente + lo que escribió)
+    filas = []
+    for d in range(7):
+        h = prefill[d] if prefill is not None else actual.get(d)
+        filas.append(_fila_editor(DIAS_ES[d], h, "Día", sede_base))
+    filas = estado_editor(f"ed_hor_{emp_id}_{ver}", filas)
+
+    def _aplicar_hor(nuevos: dict):
+        st.session_state[f"prefill_hor_{emp_id}"] = nuevos
+        st.session_state[f"ver_hor_{emp_id}"] = ver + 1
+        st.rerun()
 
     r = relleno_rapido(f"rr_hor_{emp_id}")
     if r:
         h_nuevo, idx = r
-        base = {d: actual.get(d) for d in range(7)}
+        base = {d: _horario_de_editor(filas[d]) for d in range(7)}
         for d in idx:
             base[d] = h_nuevo
-        st.session_state[f"prefill_hor_{emp_id}"] = base
-        st.session_state[f"ver_hor_{emp_id}"] = ver + 1
-        st.rerun()
+        _aplicar_hor(base)
+
+    cd = copiar_dia_ui(f"cd_hor_{emp_id}", DIAS_ES)
+    if cd:
+        origen, destinos = cd
+        base = {d: _horario_de_editor(filas[d]) for d in range(7)}
+        for d in destinos:
+            base[d] = base[origen]
+        _aplicar_hor(base)
 
     otros = [n for n in nombres if nombres[n] != emp_id]
     if otros:
@@ -746,19 +801,16 @@ def admin_horarios():
         origen = c4.selectbox("Copiar horario base de", otros, index=None, placeholder="Elige empleado")
         if c5.button("Copiar", width="stretch", disabled=origen is None):
             db.copiar_horario(nombres[origen], emp_id)
+            st.session_state.pop(f"prefill_hor_{emp_id}", None)
             st.session_state[f"ver_hor_{emp_id}"] = ver + 1
             st.success("Horario copiado.")
             st.rerun()
-
-    filas = []
-    for d in range(7):
-        h = prefill[d] if prefill is not None else actual.get(d)
-        filas.append(_fila_editor(DIAS_ES[d], h, "Día", sede_base))
 
     editado = editor_semana(f"ed_hor_{emp_id}_{ver}", filas, "Día")
     if st.button("Guardar horario base", type="primary", width="stretch", key=f"g_hor_{emp_id}"):
         nuevos = {d: _horario_de_editor(editado.iloc[d]) for d in range(7)}
         db.guardar_horario(emp_id, nuevos)
+        st.session_state.pop(f"prefill_hor_{emp_id}", None)
         st.session_state[f"ver_hor_{emp_id}"] = ver + 1
         st.success(f"Horario base de {sel} guardado.")
         st.rerun()
@@ -803,17 +855,42 @@ def admin_semana():
 
     clave = f"{emp_id}_{lunes}"
     ver = st.session_state.get(f"ver_sem_{clave}", 0)
-    prefill = st.session_state.pop(f"prefill_sem_{clave}", None)
+    prefill = st.session_state.get(f"prefill_sem_{clave}")
+
+    # Lo que hay ahora en la tabla
+    etiquetas_sem = []
+    filas = []
+    for fecha, h in semana:
+        if prefill is not None:
+            h = prefill.get(fecha)
+        estrella = " ★" if (emp_id, fecha) in turnos else ""
+        etiquetas_sem.append(f"{DIAS_ES[fecha.weekday()]} {fecha:%d/%m}")
+        filas.append(_fila_editor(f"{DIAS_ES[fecha.weekday()]} {fecha:%d/%m}{estrella}", h, "Fecha", sede_base))
+    filas = estado_editor(f"ed_sem_{clave}_{ver}", filas)
+
+    def _aplicar_sem(nuevos: dict):
+        st.session_state[f"prefill_sem_{clave}"] = nuevos
+        st.session_state[f"ver_sem_{clave}"] = ver + 1
+        st.rerun()
+
+    def _base_sem():
+        return {lunes + timedelta(days=i): _horario_de_editor(filas[i]) for i in range(7)}
 
     r = relleno_rapido(f"rr_sem_{clave}")
     if r:
         h_nuevo, idx = r
-        base = dict(semana)
+        base = _base_sem()
         for d in idx:
             base[lunes + timedelta(days=d)] = h_nuevo
-        st.session_state[f"prefill_sem_{clave}"] = base
-        st.session_state[f"ver_sem_{clave}"] = ver + 1
-        st.rerun()
+        _aplicar_sem(base)
+
+    cd = copiar_dia_ui(f"cd_sem_{clave}", etiquetas_sem)
+    if cd:
+        origen, destinos = cd
+        base = _base_sem()
+        for d in destinos:
+            base[lunes + timedelta(days=d)] = base[lunes + timedelta(days=origen)]
+        _aplicar_sem(base)
 
     b1, b2 = st.columns(2)
     if b1.button("Copiar la semana anterior", width="stretch", key=f"cp_{clave}"):
@@ -824,21 +901,16 @@ def admin_semana():
     if b2.button("Volver al horario base (borrar programación)", width="stretch", key=f"rm_{clave}",
                  disabled=not programada):
         db.borrar_semana(emp_id, lunes)
+        st.session_state.pop(f"prefill_sem_{clave}", None)
         st.session_state[f"ver_sem_{clave}"] = ver + 1
         st.success("Programación de la semana eliminada.")
         st.rerun()
-
-    filas = []
-    for fecha, h in semana:
-        if prefill is not None:
-            h = prefill.get(fecha)
-        estrella = " ★" if (emp_id, fecha) in turnos else ""
-        filas.append(_fila_editor(f"{DIAS_ES[fecha.weekday()]} {fecha:%d/%m}{estrella}", h, "Fecha", sede_base))
 
     editado = editor_semana(f"ed_sem_{clave}_{ver}", filas, "Fecha")
     if st.button("Guardar programación de la semana", type="primary", width="stretch", key=f"g_sem_{clave}"):
         nuevos = {lunes + timedelta(days=i): _horario_de_editor(editado.iloc[i]) for i in range(7)}
         db.guardar_semana(emp_id, lunes, nuevos)
+        st.session_state.pop(f"prefill_sem_{clave}", None)
         st.session_state[f"ver_sem_{clave}"] = ver + 1
         st.success(f"Semana del {lunes:%d/%m} programada para {sel}.")
         st.rerun()
