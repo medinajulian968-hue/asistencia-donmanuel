@@ -806,12 +806,19 @@ def admin_horarios():
 
     sede_base = str(empleados.set_index("id").loc[emp_id, "sede"] or "")
 
-    # Lo que hay ahora en la tabla (guardado + relleno pendiente + lo que escribió)
-    filas = []
+    # Filas base de la tabla: lo guardado, o el relleno pendiente. Tienen que ser
+    # SIEMPRE las mismas mientras no cambie `ver`: si a st.data_editor se le pasan
+    # datos distintos en cada rerun, Streamlit descarta las ediciones anteriores
+    # y se va borrando lo que el usuario acaba de escribir.
+    clave_ed = f"ed_hor_{emp_id}_{ver}"
+    filas_base = []
     for d in range(7):
         h = prefill[d] if prefill is not None else actual.get(d)
-        filas.append(_fila_editor(DIAS_ES[d], h, "Día", sede_base))
-    filas = estado_editor(f"ed_hor_{emp_id}_{ver}", filas)
+        filas_base.append(_fila_editor(DIAS_ES[d], h, "Día", sede_base))
+
+    def _estado_actual():
+        """Lo que se ve ahora en la tabla: base + lo que escribió y aún no guarda."""
+        return estado_editor(clave_ed, filas_base)
 
     def _aplicar_hor(nuevos: dict):
         st.session_state[f"prefill_hor_{emp_id}"] = nuevos
@@ -821,6 +828,7 @@ def admin_horarios():
     r = relleno_rapido(f"rr_hor_{emp_id}")
     if r:
         h_nuevo, idx = r
+        filas = _estado_actual()
         base = {d: _horario_de_editor(filas[d]) for d in range(7)}
         for d in idx:
             base[d] = h_nuevo
@@ -829,6 +837,7 @@ def admin_horarios():
     cd = copiar_dia_ui(f"cd_hor_{emp_id}", DIAS_ES)
     if cd:
         origen, destinos = cd
+        filas = _estado_actual()
         base = {d: _horario_de_editor(filas[d]) for d in range(7)}
         for d in destinos:
             base[d] = base[origen]
@@ -845,7 +854,7 @@ def admin_horarios():
             st.success("Horario copiado.")
             st.rerun()
 
-    editado = editor_semana(f"ed_hor_{emp_id}_{ver}", filas, "Día")
+    editado = editor_semana(clave_ed, filas_base, "Día")
     if st.button("Guardar horario base", type="primary", width="stretch", key=f"g_hor_{emp_id}"):
         nuevos = {d: _horario_de_editor(editado.iloc[d]) for d in range(7)}
         db.guardar_horario(emp_id, nuevos)
@@ -896,16 +905,19 @@ def admin_semana():
     ver = st.session_state.get(f"ver_sem_{clave}", 0)
     prefill = st.session_state.get(f"prefill_sem_{clave}")
 
-    # Lo que hay ahora en la tabla
+    # Filas base de la tabla (ver nota en admin_horarios: deben ser estables)
+    clave_ed = f"ed_sem_{clave}_{ver}"
     etiquetas_sem = []
-    filas = []
+    filas_base = []
     for fecha, h in semana:
         if prefill is not None:
             h = prefill.get(fecha)
         estrella = " ★" if (emp_id, fecha) in turnos else ""
         etiquetas_sem.append(f"{DIAS_ES[fecha.weekday()]} {fecha:%d/%m}")
-        filas.append(_fila_editor(f"{DIAS_ES[fecha.weekday()]} {fecha:%d/%m}{estrella}", h, "Fecha", sede_base))
-    filas = estado_editor(f"ed_sem_{clave}_{ver}", filas)
+        filas_base.append(_fila_editor(f"{DIAS_ES[fecha.weekday()]} {fecha:%d/%m}{estrella}", h, "Fecha", sede_base))
+
+    def _estado_actual():
+        return estado_editor(clave_ed, filas_base)
 
     def _aplicar_sem(nuevos: dict):
         st.session_state[f"prefill_sem_{clave}"] = nuevos
@@ -913,6 +925,7 @@ def admin_semana():
         st.rerun()
 
     def _base_sem():
+        filas = _estado_actual()
         return {lunes + timedelta(days=i): _horario_de_editor(filas[i]) for i in range(7)}
 
     r = relleno_rapido(f"rr_sem_{clave}")
@@ -945,7 +958,7 @@ def admin_semana():
         st.success("Programación de la semana eliminada.")
         st.rerun()
 
-    editado = editor_semana(f"ed_sem_{clave}_{ver}", filas, "Fecha")
+    editado = editor_semana(clave_ed, filas_base, "Fecha")
     if st.button("Guardar programación de la semana", type="primary", width="stretch", key=f"g_sem_{clave}"):
         nuevos = {lunes + timedelta(days=i): _horario_de_editor(editado.iloc[i]) for i in range(7)}
         db.guardar_semana(emp_id, lunes, nuevos)
