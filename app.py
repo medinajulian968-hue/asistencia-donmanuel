@@ -668,19 +668,10 @@ def _horario_de_editor(fila) -> "db.Horario | None":
     if not bool(fila["Trabaja"]):
         return None
 
-    def t(v):
-        if v is None or (isinstance(v, float) and pd.isna(v)) or v is pd.NaT:
-            return None
-        if isinstance(v, time):
-            return v
-        if isinstance(v, str):
-            try:
-                return time.fromisoformat(v)
-            except ValueError:
-                pass
-        return pd.Timestamp(v).time()
-
-    bloques = db.limpiar_bloques([(t(fila["Entrada 1"]), t(fila["Salida 1"])), (t(fila["Entrada 2"]), t(fila["Salida 2"]))])
+    bloques = db.limpiar_bloques([
+        (hora_valor(fila["Entrada 1"]), hora_valor(fila["Salida 1"])),
+        (hora_valor(fila["Entrada 2"]), hora_valor(fila["Salida 2"])),
+    ])
     sede = fila.get("Sede")
     sede = "" if sede is None or (isinstance(sede, float) and pd.isna(sede)) else str(sede)
     return db.Horario(bloques, sede=sede) if bloques else None
@@ -688,11 +679,56 @@ def _horario_de_editor(fila) -> "db.Horario | None":
 
 def editor_semana(clave: str, filas: list[dict], etiqueta_col: str) -> pd.DataFrame:
     """Tabla editable de 7 dias con hasta 2 bloques. Escribe las horas como 08:00."""
-    df = pd.DataFrame(filas, columns=[etiqueta_col] + COLS_EDITOR)
+    df = pd.DataFrame([normalizar_fila(f) | {etiqueta_col: f[etiqueta_col]} for f in filas],
+                      columns=[etiqueta_col] + COLS_EDITOR)
     return st.data_editor(
         df, key=clave, hide_index=True, width="stretch", num_rows="fixed",
         column_config=_config_editor(etiqueta_col),
     )
+
+
+COLS_HORA = ("Entrada 1", "Salida 1", "Entrada 2", "Salida 2")
+
+
+def hora_valor(v) -> time | None:
+    """
+    Convierte a `time` lo que venga del editor. Al editar una celda a mano,
+    Streamlit devuelve la hora como texto ('07:00:00'); si se mezclara texto
+    con `time` en la misma columna, la tabla no se puede volver a dibujar.
+    Nunca lanza error: lo que no se entienda queda en None.
+    """
+    if v is None or v is pd.NaT:
+        return None
+    if isinstance(v, time):
+        return v
+    try:
+        if isinstance(v, float) and pd.isna(v):
+            return None
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return None
+            try:
+                return time.fromisoformat(v)
+            except ValueError:
+                pass
+        return pd.Timestamp(v).time()
+    except (ValueError, TypeError):
+        return None
+
+
+def normalizar_fila(fila: dict) -> dict:
+    """Deja cada columna con el tipo que espera la tabla."""
+    fila = dict(fila)
+    for c in COLS_HORA:
+        fila[c] = hora_valor(fila.get(c))
+    fila["Trabaja"] = bool(fila.get("Trabaja"))
+    sede = fila.get("Sede")
+    if sede is None or (isinstance(sede, float) and pd.isna(sede)) or not str(sede).strip():
+        fila["Sede"] = None
+    else:
+        fila["Sede"] = str(sede)
+    return fila
 
 
 def estado_editor(clave_editor: str, filas_base: list[dict]) -> list[dict]:
@@ -705,10 +741,13 @@ def estado_editor(clave_editor: str, filas_base: list[dict]) -> list[dict]:
     filas = [dict(f) for f in filas_base]
     if isinstance(estado, dict):
         for idx, cambios in (estado.get("edited_rows") or {}).items():
-            i = int(idx)
+            try:
+                i = int(idx)
+            except (TypeError, ValueError):
+                continue
             if 0 <= i < len(filas):
                 filas[i].update(cambios)
-    return filas
+    return [normalizar_fila(f) for f in filas]
 
 
 def copiar_dia_ui(clave: str, etiquetas: list[str]):
