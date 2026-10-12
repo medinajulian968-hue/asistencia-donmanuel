@@ -253,20 +253,33 @@ def verificar_pin(empleado_id: int, pin: str) -> bool:
 Bloque = tuple[time, time]
 
 
+ESTADO_TRABAJA = "trabaja"
+ESTADO_VACACIONES = "vacaciones"
+
+
 @dataclass
 class Horario:
-    """Lo que debe trabajar una persona un dia: 1 o 2 bloques (turno partido) y en que sede."""
+    """
+    Lo que le corresponde a una persona un dia: 1 o 2 bloques (turno partido) y
+    en que sede. Si estado == "vacaciones" no hay bloques: ese dia no se le
+    exigen horas y no cuenta como descanso normal.
+    """
     bloques: list[Bloque]
     origen: str = "plantilla"  # "plantilla" (dia de la semana) o "turno" (fecha programada)
     sede: str = ""
+    estado: str = ESTADO_TRABAJA
 
     @property
-    def hora_entrada(self) -> time:
-        return self.bloques[0][0]
+    def vacaciones(self) -> bool:
+        return self.estado == ESTADO_VACACIONES
 
     @property
-    def hora_salida(self) -> time:
-        return self.bloques[-1][1]
+    def hora_entrada(self) -> time | None:
+        return self.bloques[0][0] if self.bloques else None
+
+    @property
+    def hora_salida(self) -> time | None:
+        return self.bloques[-1][1] if self.bloques else None
 
     @property
     def jornada_min(self) -> int:
@@ -277,6 +290,8 @@ class Horario:
         return len(self.bloques) > 1
 
     def texto(self, con_sede: bool = False) -> str:
+        if self.vacaciones:
+            return "VACACIONES"
         t = " y ".join(f"{e.strftime('%H:%M')}–{s_.strftime('%H:%M')}" for e, s_ in self.bloques)
         return f"{t} · {self.sede}" if con_sede and self.sede else t
 
@@ -297,7 +312,7 @@ def _bloques_de_fila(f: dict) -> list[Bloque]:
     return bloques
 
 
-def _fila_de_bloques(bloques: list[Bloque], sede: str = "") -> dict:
+def _fila_de_bloques(bloques: list[Bloque], sede: str = "", estado: str = ESTADO_TRABAJA) -> dict:
     b1 = bloques[0] if bloques else None
     b2 = bloques[1] if len(bloques) > 1 else None
     return {
@@ -306,12 +321,16 @@ def _fila_de_bloques(bloques: list[Bloque], sede: str = "") -> dict:
         "hora_entrada2": b2[0].strftime("%H:%M") if b2 else None,
         "hora_salida2": b2[1].strftime("%H:%M") if b2 else None,
         "sede": (sede or "").strip(),
+        "estado": estado,
     }
 
 
 def _horario_de_fila(f: dict, origen: str) -> Horario | None:
+    sede = (f.get("sede") or "").strip()
+    if (f.get("estado") or "") == ESTADO_VACACIONES:
+        return Horario([], origen, sede, ESTADO_VACACIONES)
     b = _bloques_de_fila(f)
-    return Horario(b, origen, (f.get("sede") or "").strip()) if b else None
+    return Horario(b, origen, sede) if b else None
 
 
 def _normalizar_horario(h) -> Horario | None:
@@ -319,6 +338,8 @@ def _normalizar_horario(h) -> Horario | None:
     if h is None:
         return None
     if isinstance(h, Horario):
+        if h.vacaciones:
+            return Horario([], h.origen, h.sede, ESTADO_VACACIONES)
         bloques, sede = limpiar_bloques(h.bloques), h.sede
     else:
         bloques, sede = limpiar_bloques(h), ""
@@ -336,7 +357,7 @@ def limpiar_bloques(bloques) -> list[Bloque]:
 def horario_empleado(empleado_id: int) -> dict[int, Horario]:
     """Plantilla: {dia_semana: Horario} solo para los dias que trabaja."""
     data = (
-        cliente().table("horarios").select("dia_semana,hora_entrada,hora_salida,hora_entrada2,hora_salida2,sede")
+        cliente().table("horarios").select("dia_semana,hora_entrada,hora_salida,hora_entrada2,hora_salida2,sede,estado")
         .eq("empleado_id", empleado_id).execute().data
     )
     out = {}
@@ -355,6 +376,8 @@ def guardar_horario(empleado_id: int, dias: dict[int, "Horario | list[Bloque] | 
     for dia, h in dias.items():
         h = _normalizar_horario(h)
         if h is None:
+            continue
+        if h.vacaciones:   # las vacaciones son por fecha, no parte del horario fijo
             continue
         fila = _fila_de_bloques(h.bloques, h.sede)
         fila["jornada_min"] = h.jornada_min
@@ -387,15 +410,21 @@ def turnos_rango(desde: date, hasta: date, empleado_id: int | None = None) -> di
         q = q.eq("empleado_id", empleado_id)
     out = {}
     for f in q.execute().data:
-        h = None if f.get("libre") else _horario_de_fila(f, "turno")
+        if (f.get("estado") or "") == ESTADO_VACACIONES:
+            h = Horario([], "turno", (f.get("sede") or "").strip(), ESTADO_VACACIONES)
+        else:
+            h = None if f.get("libre") else _horario_de_fila(f, "turno")
         out[(int(f["empleado_id"]), date.fromisoformat(f["fecha"]))] = h
     return out
 
 
 def _fila_turno(empleado_id: int, fecha: date, h) -> dict:
     h = _normalizar_horario(h)
-    return {"empleado_id": empleado_id, "fecha": fecha.strftime("%Y-%m-%d"), "libre": h is None,
-            **_fila_de_bloques(h.bloques if h else [], h.sede if h else "")}
+    vac = bool(h and h.vacaciones)
+    return {"empleado_id": empleado_id, "fecha": fecha.strftime("%Y-%m-%d"),
+            "libre": h is None or vac,
+            **_fila_de_bloques(h.bloques if h else [], h.sede if h else "",
+                               ESTADO_VACACIONES if vac else ESTADO_TRABAJA)}
 
 
 def guardar_turno(empleado_id: int, fecha: date, h) -> None:
@@ -432,7 +461,7 @@ def horario_del_dia(empleado_id: int, fecha: date, plantilla: dict[int, Horario]
             plantilla = horario_empleado(empleado_id)
         h = plantilla.get(fecha.weekday())
     if h is not None and not h.sede and sede_defecto:
-        h = Horario(h.bloques, h.origen, sede_defecto)
+        h = Horario(h.bloques, h.origen, sede_defecto, h.estado)
     return h
 
 
@@ -475,6 +504,32 @@ def semana_todos(lunes: date, sede: str | None = None) -> pd.DataFrame:
         if not sede or alguno:
             filas.append(fila)
     return pd.DataFrame(filas)
+
+
+def guardar_turnos(turnos: list[tuple[int, date, "Horario | None"]]) -> int:
+    """
+    Graba muchos turnos de una vez (importacion). Cada elemento es
+    (empleado_id, fecha, Horario o None para descanso). Devuelve cuantos grabo.
+    """
+    filas = [_fila_turno(emp_id, fecha, h) for emp_id, fecha, h in turnos]
+    for i in range(0, len(filas), 200):
+        cliente().table("turnos").upsert(filas[i:i + 200], on_conflict="empleado_id,fecha").execute()
+    return len(filas)
+
+
+def dias_vacaciones(desde: date, hasta: date, empleado_id: int | None = None) -> dict[int, int]:
+    """{empleado_id: cuantos dias de vacaciones tiene programados en el rango}."""
+    q = (
+        cliente().table("turnos").select("empleado_id,fecha,estado")
+        .eq("estado", ESTADO_VACACIONES)
+        .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
+    )
+    if empleado_id is not None:
+        q = q.eq("empleado_id", empleado_id)
+    out: dict[int, int] = {}
+    for f in q.execute().data:
+        out[int(f["empleado_id"])] = out.get(int(f["empleado_id"]), 0) + 1
+    return out
 
 
 # --- Sedes ----------------------------------------------------------------------
@@ -761,7 +816,13 @@ def resumir_dia(
     tardanza = extra = faltante = 0
     jornada = hor.jornada_min if hor else 0
 
-    if hor is None:
+    if hor is not None and hor.vacaciones:
+        # Dia de vacaciones: no se exigen horas. Si trabajo, todo es extra.
+        trabajados = sum(_minutos(s_ - e) for e, s_ in bloques)
+        if trabajados:
+            extra = trabajados
+        obs.append("Vacaciones")
+    elif hor is None:
         trabajados = sum(_minutos(s_ - e) for e, s_ in bloques)
         if trabajados:
             extra = trabajados
@@ -883,6 +944,11 @@ def rango_periodo(modo: str, ref: date, quincena: int = 1) -> tuple[date, date]:
     return primero, ultimo
 
 
+def minutos_jornada_dia() -> int:
+    """Jornada de un dia (para descontar vacaciones): mes legal / 30 dias."""
+    return int(round(horas_mes_legal() * 60 / 30))
+
+
 def jornada_legal_min(modo: str, desde: date, hasta: date) -> int:
     """
     Minutos de jornada ordinaria del periodo, con la convencion de nomina
@@ -900,10 +966,12 @@ def jornada_legal_min(modo: str, desde: date, hasta: date) -> int:
     return int(round(mes * dias / 30))
 
 
-def totales_periodo(resumen: pd.DataFrame, legal_min: int, tolerancia: int) -> pd.DataFrame:
+def totales_periodo(resumen: pd.DataFrame, legal_min: int, tolerancia: int,
+                    vacaciones: dict[int, int] | None = None) -> pd.DataFrame:
     """
     Un renglon por empleado: horas trabajadas en el periodo vs jornada legal.
     Extra = trabajado - legal (si supera la tolerancia); faltante = lo contrario.
+    Cada dia de vacaciones baja la jornada legal exigida en una jornada diaria.
     """
     if resumen.empty:
         return pd.DataFrame()
@@ -913,8 +981,11 @@ def totales_periodo(resumen: pd.DataFrame, legal_min: int, tolerancia: int) -> p
         tardanza_min=("tardanza_min", "sum"),
         sobre_horario_min=("extra_total_min", "sum"),
     )
-    tot["legal_min"] = legal_min
-    dif = tot["trabajado_min"] - legal_min
+    vacaciones = vacaciones or {}
+    por_dia = minutos_jornada_dia()
+    tot["dias_vacaciones"] = tot["empleado_id"].map(lambda i: vacaciones.get(int(i), 0)).astype(int)
+    tot["legal_min"] = (legal_min - tot["dias_vacaciones"] * por_dia).clip(lower=0).astype(int)
+    dif = tot["trabajado_min"] - tot["legal_min"]
     tot["extra_min"] = dif.where(dif > tolerancia, 0).clip(lower=0).astype(int)
     tot["faltante_min"] = (-dif).where(-dif > tolerancia, 0).clip(lower=0).astype(int)
     return tot
@@ -986,6 +1057,7 @@ def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame,
                     "Empleado": df_totales["nombre"],
                     "Período": titulo_periodo,
                     "Días con marcación": df_totales["dias"],
+                    "Días de vacaciones": df_totales["dias_vacaciones"],
                     "Horas trabajadas": (df_totales["trabajado_min"] / 60).round(2),
                     "Jornada legal (h)": (df_totales["legal_min"] / 60).round(2),
                     "Horas extra": (df_totales["extra_min"] / 60).round(2),

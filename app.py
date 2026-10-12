@@ -312,9 +312,9 @@ def tabla_semana(semana, hoy: date | None = None):
         marca = "👉 " if fecha == hoy else ""
         filas.append({
             "Día": f"{marca}{DIAS_ES[fecha.weekday()]} {fecha.strftime('%d/%m')}",
-            "Sede": (h.sede if h else "") or "",
+            "Sede": ("" if h is None or h.vacaciones else h.sede) or "",
             "Horario": h.texto() if h else "Libre",
-            "Jornada": fmt_hm(h.jornada_min) if h else "",
+            "Jornada": fmt_hm(h.jornada_min) if h and not h.vacaciones else "",
         })
         total += h.jornada_min if h else 0
     st.dataframe(pd.DataFrame(filas), hide_index=True, width="stretch")
@@ -390,7 +390,8 @@ def pagina_reporte():
     tol = db.tolerancia_min()
     st.caption(
         f"**{titulo}** ({desde:%d/%m} – {hasta:%d/%m}) · Jornada legal del período: **{fmt_hm(legal_min)}** "
-        f"(base {db.horas_semana_legal():g} h/semana = {db.horas_mes_legal():g} h/mes, ajustable en Configuración). "
+        f"(base {db.horas_semana_legal():g} h/semana = {db.horas_mes_legal():g} h/mes, ajustable en Configuración; "
+        f"cada día de vacaciones la baja en {fmt_hm(db.minutos_jornada_dia())}). "
         "Extra = horas trabajadas en el período − jornada legal. "
         f"Los primeros {db.gracia_salida_min()} min después de la salida programada son parte del turno."
     )
@@ -405,7 +406,8 @@ def pagina_reporte():
         st.caption(f"Mostrando solo los días trabajados en **{sede_f}**. La liquidación del período "
                    "se calcula sobre esos días; para la liquidación completa elige *Todas*.")
 
-    totales = db.totales_periodo(resumen, legal_min, tol)
+    vac = db.dias_vacaciones(desde, hasta, emp_id)
+    totales = db.totales_periodo(resumen, legal_min, tol, vac)
 
     # --- Totales -----------------------------------------------------------
     m1, m2, m3, m4 = st.columns(4)
@@ -427,6 +429,7 @@ def pagina_reporte():
     tot_vista = pd.DataFrame({
         "Empleado": totales["nombre"],
         "Días": totales["dias"],
+        "Vacaciones (días)": totales["dias_vacaciones"],
         "Horas trabajadas": totales["trabajado_min"].map(fmt_hm),
         "Jornada legal": totales["legal_min"].map(fmt_hm),
         "Horas extra": totales["extra_min"].map(fmt_hm),
@@ -524,9 +527,12 @@ def pagina_admin():
     if not pedir_admin():
         return
 
-    t_emp, t_hor, t_sem, t_reg, t_sedes, t_cfg = st.tabs(
-        ["👥 Empleados", "🕒 Horario base", "📅 Programar semana", "📋 Marcaciones", "🏬 Sedes", "⚙️ Configuración"]
+    t_emp, t_hor, t_sem, t_imp, t_reg, t_sedes, t_cfg = st.tabs(
+        ["👥 Empleados", "🕒 Horario base", "📅 Programar semana", "📥 Importar",
+         "📋 Marcaciones", "🏬 Sedes", "⚙️ Configuración"]
     )
+    with t_imp:
+        admin_importar()
     with t_emp:
         admin_empleados()
     with t_sedes:
@@ -635,13 +641,15 @@ def admin_empleados():
                     st.rerun()
 
 
-COLS_EDITOR = ["Trabaja", "Sede", "Entrada 1", "Salida 1", "Entrada 2", "Salida 2"]
+ESTADOS_DIA = ["Trabaja", "Descanso", "Vacaciones"]
+COLS_EDITOR = ["Estado", "Sede", "Entrada 1", "Salida 1", "Entrada 2", "Salida 2"]
 
 
-def _config_editor(etiqueta_dia: str):
+def _config_editor(etiqueta_dia: str, con_vacaciones: bool = True):
     return {
         etiqueta_dia: st.column_config.TextColumn(etiqueta_dia, disabled=True, width="medium"),
-        "Trabaja": st.column_config.CheckboxColumn("Trabaja", width="small"),
+        "Estado": st.column_config.SelectboxColumn(
+            "Estado", options=ESTADOS_DIA if con_vacaciones else ESTADOS_DIA[:2], width="small", required=True),
         "Sede": st.column_config.SelectboxColumn("Sede", options=sedes_activas(), width="small"),
         "Entrada 1": st.column_config.TimeColumn("Entrada 1", format="HH:mm", step=300),
         "Salida 1": st.column_config.TimeColumn("Salida 1", format="HH:mm", step=300),
@@ -652,9 +660,15 @@ def _config_editor(etiqueta_dia: str):
 
 def _fila_editor(etiqueta: str, h, etiqueta_col: str, sede_defecto: str = "") -> dict:
     b = h.bloques if h else []
+    if h is None:
+        estado = "Descanso"
+    elif h.vacaciones:
+        estado = "Vacaciones"
+    else:
+        estado = "Trabaja"
     return {
         etiqueta_col: etiqueta,
-        "Trabaja": h is not None,
+        "Estado": estado,
         "Sede": (h.sede if h and h.sede else sede_defecto) or None,
         "Entrada 1": b[0][0] if len(b) > 0 else None,
         "Salida 1": b[0][1] if len(b) > 0 else None,
@@ -664,26 +678,29 @@ def _fila_editor(etiqueta: str, h, etiqueta_col: str, sede_defecto: str = "") ->
 
 
 def _horario_de_editor(fila) -> "db.Horario | None":
-    """Convierte una fila del editor en Horario (None = no trabaja)."""
-    if not bool(fila["Trabaja"]):
+    """Convierte una fila del editor en Horario (None = descanso)."""
+    estado = str(fila.get("Estado") or "Descanso")
+    sede_txt = fila.get("Sede")
+    sede_txt = "" if sede_txt is None or (isinstance(sede_txt, float) and pd.isna(sede_txt)) else str(sede_txt)
+    if estado == "Vacaciones":
+        return db.Horario([], sede=sede_txt, estado=db.ESTADO_VACACIONES)
+    if estado != "Trabaja":
         return None
 
     bloques = db.limpiar_bloques([
         (hora_valor(fila["Entrada 1"]), hora_valor(fila["Salida 1"])),
         (hora_valor(fila["Entrada 2"]), hora_valor(fila["Salida 2"])),
     ])
-    sede = fila.get("Sede")
-    sede = "" if sede is None or (isinstance(sede, float) and pd.isna(sede)) else str(sede)
-    return db.Horario(bloques, sede=sede) if bloques else None
+    return db.Horario(bloques, sede=sede_txt) if bloques else None
 
 
-def editor_semana(clave: str, filas: list[dict], etiqueta_col: str) -> pd.DataFrame:
+def editor_semana(clave: str, filas: list[dict], etiqueta_col: str, con_vacaciones: bool = True) -> pd.DataFrame:
     """Tabla editable de 7 dias con hasta 2 bloques. Escribe las horas como 08:00."""
     df = pd.DataFrame([normalizar_fila(f) | {etiqueta_col: f[etiqueta_col]} for f in filas],
                       columns=[etiqueta_col] + COLS_EDITOR)
     return st.data_editor(
         df, key=clave, hide_index=True, width="stretch", num_rows="fixed",
-        column_config=_config_editor(etiqueta_col),
+        column_config=_config_editor(etiqueta_col, con_vacaciones),
     )
 
 
@@ -722,7 +739,8 @@ def normalizar_fila(fila: dict) -> dict:
     fila = dict(fila)
     for c in COLS_HORA:
         fila[c] = hora_valor(fila.get(c))
-    fila["Trabaja"] = bool(fila.get("Trabaja"))
+    estado = fila.get("Estado")
+    fila["Estado"] = str(estado) if estado in ESTADOS_DIA else "Descanso"
     sede = fila.get("Sede")
     if sede is None or (isinstance(sede, float) and pd.isna(sede)) or not str(sede).strip():
         fila["Sede"] = None
@@ -854,7 +872,7 @@ def admin_horarios():
             st.success("Horario copiado.")
             st.rerun()
 
-    editado = editor_semana(clave_ed, filas_base, "Día")
+    editado = editor_semana(clave_ed, filas_base, "Día", con_vacaciones=False)
     if st.button("Guardar horario base", type="primary", width="stretch", key=f"g_hor_{emp_id}"):
         nuevos = {d: _horario_de_editor(editado.iloc[d]) for d in range(7)}
         db.guardar_horario(emp_id, nuevos)
@@ -975,6 +993,141 @@ def admin_semana():
         st.caption("Sin empleados activos.")
     else:
         st.dataframe(tabla, hide_index=True, width="stretch")
+
+
+PLANTILLA_IMPORT = (
+    "empleado,fecha,sede,entrada1,salida1,entrada2,salida2,estado\n"
+    "Sebastian Huertas,2026-10-13,Gourmet,07:00,14:00,,,trabaja\n"
+    "Marilyn Saba,2026-10-14,Gourmet,10:00,14:00,16:00,21:00,trabaja\n"
+    "Sonia,2026-10-12,Gourmet,,,,,vacaciones\n"
+    "Yeison Cuadrado,2026-10-18,Gourmet,,,,,descanso\n"
+)
+
+
+def _leer_csv_turnos(texto: str) -> pd.DataFrame:
+    """Lee el CSV de importación y normaliza las columnas."""
+    import io as _io
+
+    df = pd.read_csv(_io.StringIO(texto), dtype=str).fillna("")
+    df.columns = [c.strip().lower() for c in df.columns]
+    faltan = {"empleado", "fecha"} - set(df.columns)
+    if faltan:
+        raise ValueError(f"Al archivo le faltan columnas: {', '.join(sorted(faltan))}")
+    for c in ("sede", "entrada1", "salida1", "entrada2", "salida2", "estado"):
+        if c not in df.columns:
+            df[c] = ""
+    for c in df.columns:
+        df[c] = df[c].astype(str).str.strip()
+    df["estado"] = df["estado"].str.lower().replace({"": "trabaja"})
+    return df
+
+
+def _fila_import_a_horario(fila) -> "db.Horario | None":
+    estado = fila["estado"]
+    if estado.startswith("vac"):
+        return db.Horario([], sede=fila["sede"], estado=db.ESTADO_VACACIONES)
+    if estado.startswith("desc") or estado in ("d", "libre"):
+        return None
+    bloques = db.limpiar_bloques([
+        (hora_valor(fila["entrada1"]), hora_valor(fila["salida1"])),
+        (hora_valor(fila["entrada2"]), hora_valor(fila["salida2"])),
+    ])
+    return db.Horario(bloques, sede=fila["sede"]) if bloques else None
+
+
+def admin_importar():
+    st.caption(
+        "Carga de una vez la programación de varias personas y fechas. Útil para pasar el cuadro "
+        "semanal completo sin escribir celda por celda. Lo que importes queda en *Programar semana* "
+        "y se puede corregir allí después."
+    )
+    with st.expander("Formato del archivo"):
+        st.markdown(
+            "Un archivo **CSV** (se puede hacer en Excel → *Guardar como CSV*) con una fila por "
+            "persona y día:\n\n"
+            "- `empleado`: el nombre tal como está en la app\n"
+            "- `fecha`: `AAAA-MM-DD`\n"
+            "- `sede`: nombre de la sede (si se deja vacío, usa la sede base de la persona)\n"
+            "- `entrada1` / `salida1`: el turno (`07:00`, `14:00`)\n"
+            "- `entrada2` / `salida2`: el segundo bloque si es turno partido (vacío si no)\n"
+            "- `estado`: `trabaja`, `descanso` o `vacaciones`"
+        )
+        st.code(PLANTILLA_IMPORT, language="csv")
+        st.download_button("⬇️ Descargar plantilla", PLANTILLA_IMPORT, "plantilla_horarios.csv", "text/csv")
+
+    archivo = st.file_uploader("Archivo CSV", type=["csv"], key="imp_csv")
+    if archivo is None:
+        return
+
+    try:
+        df = _leer_csv_turnos(archivo.getvalue().decode("utf-8-sig"))
+    except Exception as e:
+        st.error(f"No se pudo leer el archivo: {e}")
+        return
+
+    empleados = db.listar_empleados(solo_activos=False)
+    por_nombre = {str(r.nombre).strip().lower(): int(r.id) for r in empleados.itertuples()}
+
+    # --- Nombres que no coinciden: se mapean a mano -------------------------------
+    sin_match = sorted({n for n in df["empleado"] if n.strip().lower() not in por_nombre})
+    mapa_manual = {}
+    if sin_match:
+        st.warning(f"No encontré {len(sin_match)} nombre(s) en la app. Indícame a quién corresponde cada uno "
+                   "(o deja *— omitir —* para no cargarlo).")
+        opciones = ["— omitir —"] + empleados["nombre"].tolist()
+        for n in sin_match:
+            elegido = st.selectbox(f"«{n}» es:", opciones, key=f"map_{n}")
+            if elegido != "— omitir —":
+                mapa_manual[n] = int(empleados.set_index("nombre").loc[elegido, "id"])
+
+    # --- Armar los turnos ---------------------------------------------------------
+    turnos, problemas, vista = [], [], []
+    for fila in df.to_dict("records"):
+        nombre = fila["empleado"]
+        emp_id = por_nombre.get(nombre.strip().lower()) or mapa_manual.get(nombre)
+        if emp_id is None:
+            continue
+        try:
+            fecha = pd.Timestamp(fila["fecha"]).date()
+        except Exception:
+            problemas.append(f"{nombre}: fecha inválida «{fila['fecha']}»")
+            continue
+        h = _fila_import_a_horario(fila)
+        if fila["estado"] == "trabaja" and h is None:
+            problemas.append(f"{nombre} {fecha:%d/%m}: dice «trabaja» pero no tiene horas → se cargará como descanso")
+        turnos.append((emp_id, fecha, h))
+        vista.append({
+            "Empleado": nombre,
+            "Fecha": f"{fecha:%d/%m/%Y}",
+            "Día": DIAS_ES[fecha.weekday()][:3],
+            "Sede": "" if h is None or h.vacaciones else h.sede,
+            "Programado": h.texto() if h else "Descanso",
+            "Jornada": fmt_hm(h.jornada_min) if h and not h.vacaciones else "",
+        })
+
+    if not turnos:
+        st.info("No hay filas que se puedan cargar todavía.")
+        return
+
+    for p_ in problemas:
+        st.warning(p_)
+
+    st.subheader("Revisa antes de cargar")
+    fechas = sorted({f for _, f, _ in turnos})
+    personas = len({e for e, _, _ in turnos})
+    st.caption(f"**{len(turnos)} días** · **{personas} personas** · del {fechas[0]:%d/%m/%Y} al {fechas[-1]:%d/%m/%Y}")
+    st.dataframe(pd.DataFrame(vista), hide_index=True, width="stretch")
+
+    st.warning("Al cargar se **reemplaza** la programación que ya exista en esas fechas para esas personas. "
+               "Las marcaciones y las horas ya registradas no se tocan.")
+    with st.form("form_import"):
+        pwd = st.text_input("Confirma con la contraseña de administrador", type="password")
+        if st.form_submit_button("Cargar programación", type="primary", width="stretch"):
+            if not db.verificar_admin(pwd):
+                st.error("Contraseña incorrecta. No se cargó nada.")
+            else:
+                n = db.guardar_turnos(turnos)
+                st.success(f"Listo: se cargaron {n} días. Revísalos en *Programar semana*.")
 
 
 def admin_registros():

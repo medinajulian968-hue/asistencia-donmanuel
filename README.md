@@ -26,8 +26,15 @@ Corre en **Streamlit Community Cloud** y guarda los datos y fotos en **Supabase*
 5. **Sedes**: las tiendas (Gourmet, Parque, …). Cada empleado tiene una **sede
    base** y en el horario base o en la programación semanal se puede poner una
    sede distinta cada día (hoy en Gourmet, mañana en Parque).
-6. **Configuración**: tolerancia, jornada legal semanal/mensual y si el tiempo
+6. **Importar**: carga de una vez el cuadro semanal completo desde un archivo CSV
+   (una fila por persona y día). Avisa qué nombres no encontró y deja mapearlos a
+   mano; muestra todo para revisar y pide la contraseña antes de cargar.
+7. **Configuración**: tolerancia, jornada legal semanal/mensual y si el tiempo
    antes de la entrada cuenta como trabajado.
+
+Cada día se programa con un **Estado**: *Trabaja*, *Descanso* o ***Vacaciones***.
+Un día de vacaciones no exige horas: baja la jornada legal del período en una
+jornada diaria, así no aparece como faltante.
 
 ## Horario semanal (para los empleados)
 
