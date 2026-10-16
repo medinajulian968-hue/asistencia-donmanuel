@@ -155,8 +155,8 @@ def cambiar_password_admin(nueva: str) -> None:
 def tolerancia_min() -> int:
     try:
         return int(get_config("tolerancia_min"))
-    except ValueError:
-        return 0
+    except (TypeError, ValueError):
+        return int(CONFIG_DEFAULT["tolerancia_min"])
 
 
 def contar_entrada_anticipada() -> bool:
@@ -862,9 +862,16 @@ def resumir_dia(
         if trabajados > jornada:
             extra = _aplicar_tolerancia(trabajados - jornada, tolerancia)
         elif bloques and not sin_salida and trabajados < jornada:
-            faltante = _aplicar_tolerancia(jornada - trabajados, tolerancia)
-            if faltante:
-                obs.append("Jornada incompleta")
+            # El dia solo se juzga cuando ya cerro todos sus bloques; si todavia
+            # falta uno (turno partido a medio dia) no es una jornada incompleta.
+            dia_cerrado = len(bloques) >= len(hor.bloques)
+            # Los minutos que se perdieron por llegar tarde ya se reportan como
+            # tardanza: no se vuelven a cobrar aqui.
+            sin_cubrir = (jornada - trabajados) - tardanza
+            if dia_cerrado:
+                faltante = _aplicar_tolerancia(sin_cubrir, tolerancia)
+                if faltante:
+                    obs.append("Salida anticipada")
 
     return ResumenDia(
         empleado_id=empleado_id,

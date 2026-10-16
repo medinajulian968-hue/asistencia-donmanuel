@@ -334,8 +334,13 @@ def mostrar_resumen_hoy(emp_id: int, nombre: str, fecha: date, hor):
         bloques = f" en {r.bloques} bloques" if r.bloques > 1 else ""
         partes.append(f"🕒 Trabajado hoy: **{fmt_hm(r.minutos_trabajados)}**{bloques}"
                       + (f" de {fmt_hm(r.jornada_min)}" if r.jornada_min else ""))
-    if r.observacion:
-        partes.append(f"ℹ️ {r.observacion}")
+    # Los demas avisos (sin salida, salida anticipada, faltó marcar el descanso)
+    # estan pensados para un dia ya cerrado: a media jornada confunden al que
+    # acaba de marcar. Quedan en el reporte, que es donde se revisan.
+    AVISOS_UTILES = ("Vacaciones", "Día no programado")
+    avisos = [o for o in r.observacion.split(", ") if o in AVISOS_UTILES]
+    if avisos:
+        partes.append("ℹ️ " + ", ".join(avisos))
     if partes:
         st.markdown("  \n".join(partes))
 
@@ -465,7 +470,7 @@ def pagina_reporte():
         "Bloques": resumen["bloques"],
         "Trabajado": resumen["minutos_trabajados"].map(fmt_hm),
         "Tardanza": resumen["tardanza_min"].map(fmt_hm),
-        "Faltante": resumen["faltante_min"].map(fmt_hm),
+        "Salió antes": resumen["faltante_min"].map(fmt_hm),
         "Sobre horario": resumen["extra_total_min"].map(fmt_hm),
         "Observación": resumen["observacion"],
     })
