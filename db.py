@@ -848,14 +848,8 @@ def resumir_dia(
             extra = trabajados
             obs.append("Día no programado")
     else:
-        # Inicio y fin programados de cada bloque (en datetime)
+        # Inicio programado de cada bloque (en datetime)
         inicios = [datetime.combine(fecha, b[0]) for b in hor.bloques]
-        fines = []
-        for b in hor.bloques:
-            f = datetime.combine(fecha, b[1])
-            if b[1] <= b[0]:
-                f += timedelta(days=1)
-            fines.append(f)
 
         trabajados = 0
         for i, (e, s_) in enumerate(bloques):
@@ -864,17 +858,15 @@ def resumir_dia(
                 if e > prog:
                     tardanza += _aplicar_tolerancia(_minutos(e - prog), tolerancia)
                 elif not contar_antes:
+                    # Llegar antes de la hora no suma, salvo que se configure
                     e = min(prog, s_)
-            # El ultimo bloque real se compara con el fin del ultimo programado
-            # (si olvidaron marcar el descanso, el bloque unico abarca todo el dia)
-            es_ultimo = i == len(bloques) - 1
-            fin = fines[-1] if es_ultimo else (fines[i] if i < len(fines) else None)
-            if fin is not None and gracia > 0 and s_ > fin:
-                limite = fin + timedelta(minutes=gracia)
-                trabajados += _minutos(fin - e) if fin > e else 0
-                trabajados += _minutos(s_ - limite) if s_ > limite else 0
-            else:
-                trabajados += _minutos(s_ - e)
+            trabajados += _minutos(s_ - e)
+
+        # La gabela es UNA sola por dia, no una por cada corte del turno: los
+        # primeros `gracia` minutos por encima de la jornada no se cuentan, se
+        # hayan quedado de mas al final o antes del descanso.
+        if gracia > 0 and trabajados > jornada:
+            trabajados = max(jornada, trabajados - gracia)
 
         if hor.partido and not sin_salida and 0 < len(bloques) < len(hor.bloques):
             obs.append("Faltó marcar el descanso")

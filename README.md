@@ -82,10 +82,17 @@ Cómo se cuentan las horas trabajadas:
 - **Tardanza** = minutos entre la hora de entrada programada de cada bloque y la
   entrada real (con tolerancia).
 - **Tolerancia**: si la diferencia no supera los minutos de tolerancia, no cuenta.
-- **Gracia de salida** (40 min por defecto, en Configuración): los minutos después
-  de la salida programada hasta salida + gracia siguen siendo parte del turno y no
-  suman. Con jornada de 7 h, las extras empiezan a contar a partir de **7 h 40 min**:
-  quien esté 8 h en el sitio suma 20 min de extra; 8 h 30 min suma 50 min.
+- **Gabela** (40 min por defecto, en Configuración): los primeros minutos por
+  encima de la jornada no cuentan. Es **una sola gabela al día**, aunque el turno
+  sea partido: no se renueva en cada corte. Con jornada de 7 h las extras empiezan
+  a los **7 h 40 min** (estar 8 h suma 20 min; 8 h 30 suma 50 min), y con jornada
+  de 7 h 30 empiezan a las 8 h 10, se haya quedado de más al final o antes del
+  descanso.
+
+En **turno partido** la tardanza se mide bloque por bloque (volver tarde del
+descanso cuenta como tardanza, no le quita el turno) y el descanso no se paga. Si
+alguien olvida marcar el descanso, el reporte lo avisa: si no se corrige, el
+almuerzo le quedaría contado como trabajado.
 
 El detalle por día muestra además *Sobre horario* (lo trabajado por encima del
 horario de ese día) como referencia; no es la cifra oficial de extras.

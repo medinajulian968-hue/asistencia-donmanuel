@@ -1278,8 +1278,10 @@ def admin_config():
         )
         gracia = st.number_input(
             "Gracia después de la salida (minutos)", min_value=0, max_value=180, value=db.gracia_salida_min(),
-            help="Minutos después de la hora de salida programada que todavía son parte del turno y NO suman. "
-                 "Ej.: turno hasta 14:00 con 40 min → hasta 14:40 no cuenta; si sale a 15:00 suman 20 min.",
+            help="Minutos de más al día que todavía son parte del turno y NO suman. Es UNA sola gabela "
+                 "diaria, aunque el turno sea partido. Ej.: jornada de 7 h con 40 min → las extras "
+                 "empiezan a los 7 h 40; quien esté 8 h suma 20 min, se haya quedado de más al final "
+                 "o antes del descanso.",
         )
         c1, c2 = st.columns(2)
         h_sem = c1.number_input(
