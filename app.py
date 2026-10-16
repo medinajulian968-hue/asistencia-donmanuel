@@ -328,12 +328,18 @@ def mostrar_resumen_hoy(emp_id: int, nombre: str, fecha: date, hor):
     partes = []
     if r.tardanza_min:
         partes.append(f"⏰ Llegada tarde: **{fmt_hm(r.tardanza_min)}**")
-    if r.extra_total_min:
-        partes.append(f"➕ Horas extra de hoy: **{fmt_hm(r.extra_total_min)}**")
-    if r.minutos_trabajados:
+    gracia = db.gracia_salida_min()
+    if r.minutos_presencia:
         bloques = f" en {r.bloques} bloques" if r.bloques > 1 else ""
-        partes.append(f"🕒 Trabajado hoy: **{fmt_hm(r.minutos_trabajados)}**{bloques}"
-                      + (f" de {fmt_hm(r.jornada_min)}" if r.jornada_min else ""))
+        partes.append(f"🕒 Estuviste **{fmt_hm(r.minutos_presencia)}**{bloques}"
+                      + (f" · jornada **{fmt_hm(r.jornada_min)}**" if r.jornada_min else ""))
+    if r.extra_total_min:
+        detalle = f" (ya descontados los {gracia} min de gabela)" if gracia else ""
+        partes.append(f"➕ Extra de hoy: **{fmt_hm(r.extra_total_min)}**{detalle}")
+    elif r.jornada_min and gracia and r.minutos_presencia > r.jornada_min:
+        de_mas = r.minutos_presencia - r.jornada_min
+        partes.append(f"➕ Extra de hoy: **0** — te quedaste {fmt_hm(de_mas)} de más, "
+                      f"dentro de los {gracia} min de gabela")
     # Los demas avisos (sin salida, salida anticipada, faltó marcar el descanso)
     # estan pensados para un dia ya cerrado: a media jornada confunden al que
     # acaba de marcar. Quedan en el reporte, que es donde se revisan.
@@ -468,7 +474,8 @@ def pagina_reporte():
         "Entrada": resumen["entrada_real"].map(hora),
         "Salida": resumen["salida_real"].map(hora),
         "Bloques": resumen["bloques"],
-        "Trabajado": resumen["minutos_trabajados"].map(fmt_hm),
+        "En el sitio": resumen["minutos_presencia"].map(fmt_hm),
+        "Contado": resumen["minutos_trabajados"].map(fmt_hm),
         "Tardanza": resumen["tardanza_min"].map(fmt_hm),
         "Salió antes": resumen["faltante_min"].map(fmt_hm),
         "Sobre horario": resumen["extra_total_min"].map(fmt_hm),
@@ -1165,8 +1172,51 @@ def admin_registros():
                            placeholder="Selecciona…")
         if rid is not None:
             r = regs.loc[regs["id"] == rid].iloc[0]
-            if r["foto"]:
-                mostrar_foto(r["foto"], width=200)
+            momento = r["fecha_hora"].to_pydatetime()
+            emp_id_r = int(r["empleado_id"])
+            hor_dia = db.horario_del_dia(emp_id_r, momento.date())
+            sugerida = db.hora_programada(hor_dia, r["tipo"], momento)
+
+            cc1, cc2 = st.columns([1, 2])
+            with cc1:
+                if r["foto"]:
+                    mostrar_foto(r["foto"], width=180)
+            with cc2:
+                if hor_dia is None:
+                    st.info("Ese día no tiene horario programado.")
+                else:
+                    st.markdown(
+                        f"**Horario de ese día:** {hor_dia.texto()}"
+                        + (f" · {hor_dia.sede}" if hor_dia.sede else "")
+                    )
+                if sugerida is not None:
+                    dif = int((momento - sugerida).total_seconds() // 60)
+                    signo = "después" if dif > 0 else "antes"
+                    st.markdown(
+                        f"Marcó a las **{momento:%H:%M}**; le correspondía **{sugerida:%H:%M}** "
+                        + (f"({fmt_hm(abs(dif))} {signo})" if dif else "(a tiempo)")
+                    )
+                    if dif and st.button(f"⏱️ Ajustar a las {sugerida:%H:%M}", key=f"aj_{rid}", width="stretch"):
+                        st.session_state[f"ajustar_{rid}"] = sugerida
+                        st.rerun()
+
+            ajuste = st.session_state.get(f"ajustar_{rid}")
+            if ajuste is not None:
+                st.warning(f"Se cambiará la marcación de **{momento:%H:%M}** a **{ajuste:%H:%M}**. "
+                           "Queda constancia de la hora original en la nota.")
+                k1, k2 = st.columns(2)
+                if k1.button("Confirmar ajuste", type="primary", key=f"aj_si_{rid}", width="stretch"):
+                    nota_prev = (r["nota"] or "").strip()
+                    marca = f"Ajustado por administración (marcó {momento:%H:%M})"
+                    nota_nueva = f"{nota_prev} · {marca}".strip(" ·") if nota_prev else marca
+                    db.actualizar_registro(rid, r["tipo"], ajuste, nota_nueva)
+                    st.session_state.pop(f"ajustar_{rid}", None)
+                    st.success("Marcación ajustada.")
+                    st.rerun()
+                if k2.button("Cancelar", key=f"aj_no_{rid}", width="stretch"):
+                    st.session_state.pop(f"ajustar_{rid}", None)
+                    st.rerun()
+
             with st.form(f"edit_reg_{rid}"):
                 c1, c2, c3 = st.columns(3)
                 tipo = c1.radio("Tipo", [TIPO_ENTRADA, TIPO_SALIDA], index=0 if r["tipo"] == TIPO_ENTRADA else 1,
@@ -1185,21 +1235,32 @@ def admin_registros():
                     st.rerun()
 
     st.subheader("Agregar marcación manual")
+    st.caption("Para quien olvidó marcar. La app propone la hora que le correspondía según su horario.")
     if empleados.empty:
         return
-    with st.form("nuevo_reg", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        nombres = {r.nombre: int(r.id) for r in empleados.itertuples()}
-        e = c1.selectbox("Empleado", list(nombres))
-        t = c2.radio("Tipo", [TIPO_ENTRADA, TIPO_SALIDA], horizontal=True)
-        c3, c4 = st.columns(2)
-        f = c3.date_input("Fecha", value=hoy, format="DD/MM/YYYY")
-        h = c4.time_input("Hora", value=time(8, 0), step=timedelta(minutes=1))
+
+    nombres = {r.nombre: int(r.id) for r in empleados.itertuples()}
+    c1, c2 = st.columns(2)
+    e = c1.selectbox("Empleado", list(nombres), key="man_emp")
+    t = c2.radio("Tipo", [TIPO_ENTRADA, TIPO_SALIDA], horizontal=True, key="man_tipo")
+    c3, c4 = st.columns(2)
+    f = c3.date_input("Fecha", value=hoy, format="DD/MM/YYYY", key="man_fecha")
+
+    hor_man = db.horario_del_dia(nombres[e], f)
+    prop = db.hora_programada(hor_man, t, datetime.combine(f, time(12, 0)))
+    if hor_man is None:
+        c4.caption("Ese día no tiene horario programado.")
+    else:
+        c4.caption(f"Horario de ese día: **{hor_man.texto()}**")
+
+    with st.form("nuevo_reg"):
+        h = st.time_input("Hora", value=(prop.time() if prop else time(8, 0)), step=timedelta(minutes=1),
+                          key=f"man_hora_{nombres[e]}_{f}_{t}")
         nota = st.text_input("Nota (motivo)", placeholder="Ej: olvidó marcar, celular sin batería")
         if st.form_submit_button("Agregar", width="stretch"):
-            db.crear_registro(nombres[e], t, datetime.combine(f, h), "", nota or "Registro manual")
-            # (la sede se toma del horario del dia al calcular el reporte)
-            st.success("Marcación agregada.")
+            db.crear_registro(nombres[e], t, datetime.combine(f, h), "",
+                              nota or "Agregada por administración")
+            st.success(f"Marcación agregada: {e} · {t} · {f:%d/%m} {h:%H:%M}")
             st.rerun()
 
 

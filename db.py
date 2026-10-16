@@ -517,6 +517,25 @@ def guardar_turnos(turnos: list[tuple[int, date, "Horario | None"]]) -> int:
     return len(filas)
 
 
+def hora_programada(hor: "Horario | None", tipo: str, momento: datetime) -> datetime | None:
+    """
+    Hora a la que la marcacion `tipo` deberia haber quedado segun el horario del
+    dia. Con turno partido se toma el bloque cuyo limite este mas cerca de la
+    hora marcada. Devuelve None si ese dia no hay horario.
+    """
+    if hor is None or hor.vacaciones or not hor.bloques:
+        return None
+    fecha = momento.date()
+    candidatas = []
+    for e, s_ in hor.bloques:
+        ini = datetime.combine(fecha, e)
+        fin = datetime.combine(fecha, s_)
+        if s_ <= e:
+            fin += timedelta(days=1)
+        candidatas.append(ini if tipo == TIPO_ENTRADA else fin)
+    return min(candidatas, key=lambda c: abs((c - momento).total_seconds()))
+
+
 def dias_vacaciones(desde: date, hasta: date, empleado_id: int | None = None) -> dict[int, int]:
     """{empleado_id: cuantos dias de vacaciones tiene programados en el rango}."""
     q = (
@@ -734,7 +753,8 @@ class ResumenDia:
     entrada_real: datetime | None
     salida_real: datetime | None
     bloques: int
-    minutos_trabajados: int
+    minutos_presencia: int   # tiempo real entre entrada y salida (sin descontar gabela)
+    minutos_trabajados: int  # lo que cuenta para la jornada (ya con la gabela descontada)
     tardanza_min: int
     extra_total_min: int
     faltante_min: int
@@ -886,6 +906,7 @@ def resumir_dia(
         entrada_real=entrada_real,
         salida_real=salida_real,
         bloques=len(bloques),
+        minutos_presencia=sum(_minutos(s_ - e) for e, s_ in bloques),
         minutos_trabajados=trabajados,
         tardanza_min=tardanza,
         extra_total_min=extra,

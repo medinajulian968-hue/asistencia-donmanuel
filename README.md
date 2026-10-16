@@ -100,8 +100,19 @@ marcaciones).
 
 ## Correcciones
 
-En **Administración → Marcaciones** se puede editar la hora o el tipo de una
-marcación, eliminarla, o agregar una manual (por ejemplo si alguien olvidó marcar).
+En **Administración → Marcaciones**:
+
+- Al elegir una marcación se ve el **horario de ese día**, a qué hora le
+  correspondía marcar y de cuánto fue la diferencia. Un botón
+  **«Ajustar a las HH:MM»** la deja en la hora programada; la hora original
+  queda anotada, así siempre se sabe que hubo un ajuste.
+- También se puede cambiar la hora o el tipo a mano, o eliminar la marcación.
+- **Agregar marcación manual** (para quien olvidó marcar) propone sola la hora
+  que le correspondía según su horario de ese día.
+
+Lo que cada uno ve al marcar: el tiempo que estuvo, su jornada y las horas extra
+**ya con la gabela descontada**. Si se quedó de más pero dentro de la gabela, se
+lo dice explícitamente para que no quede con la duda.
 
 ## Limpieza de fotos
 
