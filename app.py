@@ -531,6 +531,76 @@ def pagina_horarios():
 
 
 # ---------------------------------------------------------------------------
+# PAGINA: SIN MARCAR
+# ---------------------------------------------------------------------------
+
+def pagina_pendientes():
+    st.title("Sin marcar")
+    if not pedir_admin():
+        return
+
+    ahora = db.ahora()
+    hoy = ahora.date()
+    c1, c2, c3 = st.columns([1.2, 1, 1.2])
+    fecha = c1.date_input("Día", value=hoy, format="DD/MM/YYYY", key="pend_fecha")
+    margen = c2.number_input("Esperar (min)", min_value=0, max_value=480, value=60, step=15,
+                             key="pend_margen",
+                             help="Cuánto se espera después de la hora antes de reportar a alguien. "
+                                  "Con 60, a quien entraba a las 7:00 se le reporta a las 8:00.")
+    sede_sel = c3.selectbox("Sede", ["Todas"] + sedes_activas(), key="pend_sede")
+
+    # Para un día ya pasado se revisa el día completo, no solo hasta la hora actual
+    momento = ahora if fecha >= hoy else datetime.combine(fecha, time(23, 59))
+    pend = db.pendientes_de_marcar(fecha, momento, int(margen),
+                                   None if sede_sel == "Todas" else sede_sel)
+
+    if not pend:
+        st.success(f"✅ Nadie pendiente. Todos los que debían marcar hasta ahora el "
+                   f"{fecha:%d/%m/%Y} lo hicieron.")
+        return
+
+    st.warning(f"**{len(pend)}** marcación(es) sin registrar de **{len({p['empleado_id'] for p in pend})}** persona(s).")
+
+    filas = [{
+        "Registrar": False,
+        "Empleado": p["nombre"],
+        "Sede": p["sede"],
+        "Falta": p["tipo"].capitalize(),
+        "Debía marcar": f"{p['esperado']:%H:%M}",
+        "Hace": fmt_hm(p["atraso_min"]),
+        "Horario del día": p["horario"],
+    } for p in pend]
+
+    st.caption("Marca **Registrar** en quienes sepas que sí llegaron a la hora y pulsa el botón de abajo: "
+               "se les crea la marcación a su hora programada, con nota de que la agregaste tú.")
+    editado = st.data_editor(
+        pd.DataFrame(filas), hide_index=True, width="stretch", num_rows="fixed",
+        key=f"pend_ed_{fecha}_{margen}_{sede_sel}",
+        column_config={
+            "Registrar": st.column_config.CheckboxColumn("Registrar", width="small"),
+            "Empleado": st.column_config.TextColumn(disabled=True),
+            "Sede": st.column_config.TextColumn(disabled=True, width="small"),
+            "Falta": st.column_config.TextColumn(disabled=True, width="small"),
+            "Debía marcar": st.column_config.TextColumn(disabled=True, width="small"),
+            "Hace": st.column_config.TextColumn(disabled=True, width="small"),
+            "Horario del día": st.column_config.TextColumn(disabled=True),
+        },
+    )
+
+    elegidos = [p for p, fila in zip(pend, editado.to_dict("records")) if bool(fila["Registrar"])]
+    if st.button(f"Registrar {len(elegidos)} marcación(es) a su hora programada",
+                 type="primary", width="stretch", disabled=not elegidos):
+        for p in elegidos:
+            db.crear_registro(p["empleado_id"], p["tipo"], p["esperado"], "",
+                              "Agregada por administración (no marcó)", p["sede"])
+        st.success(f"Listo: {len(elegidos)} marcación(es) registradas.")
+        st.rerun()
+
+    st.caption("A quien no llegó a la hora, déjalo sin marcar y corrígelo en "
+               "*Administración → Marcaciones* con la hora real.")
+
+
+# ---------------------------------------------------------------------------
 # PAGINA: ADMINISTRACION
 # ---------------------------------------------------------------------------
 
@@ -1382,6 +1452,7 @@ with st.sidebar:
 pg = st.navigation([
     st.Page(pagina_registrar, title="Registrar", icon="📸", default=True, url_path="registrar"),
     st.Page(pagina_horarios, title="Horario semanal", icon="📅", url_path="horarios"),
+    st.Page(pagina_pendientes, title="Sin marcar", icon="⚠️", url_path="pendientes"),
     st.Page(pagina_reporte, title="Reporte de extras", icon="📊", url_path="reporte"),
     st.Page(pagina_admin, title="Administración", icon="⚙️", url_path="admin"),
 ])

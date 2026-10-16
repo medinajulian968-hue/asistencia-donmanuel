@@ -536,6 +536,57 @@ def hora_programada(hor: "Horario | None", tipo: str, momento: datetime) -> date
     return min(candidatas, key=lambda c: abs((c - momento).total_seconds()))
 
 
+def pendientes_de_marcar(fecha: date, momento: datetime | None = None, margen_min: int = 60,
+                         sede: str | None = None, ventana_min: int = 180) -> list[dict]:
+    """
+    Quienes ya debian haber marcado y no aparece la marcacion.
+
+    Por cada bloque programado se esperan dos marcaciones (entrada y salida).
+    Una se da por hecha si hay una marcacion del mismo tipo a menos de
+    `ventana_min` de la hora esperada (asi, quien marco tarde no sale aqui:
+    marco, aunque haya que corregirle la hora).
+    Solo se reportan las horas que ya pasaron hace mas de `margen_min`.
+    """
+    if momento is None:
+        momento = ahora()
+    emps = listar_empleados(solo_activos=True)
+    if emps.empty:
+        return []
+    turnos = turnos_rango(fecha, fecha)
+    regs = listar_registros(fecha, fecha)
+    out = []
+    for e in emps.itertuples():
+        eid = int(e.id)
+        hor = horario_del_dia(eid, fecha, horario_empleado(eid), turnos, e.sede or "")
+        if hor is None or hor.vacaciones or not hor.bloques:
+            continue
+        if sede and hor.sede != sede:
+            continue
+        mias = regs[regs["empleado_id"] == eid] if not regs.empty else regs
+        for ini, fin in hor.bloques:
+            fin_dt = datetime.combine(fecha, fin)
+            if fin <= ini:
+                fin_dt += timedelta(days=1)
+            for tipo, esperado in ((TIPO_ENTRADA, datetime.combine(fecha, ini)), (TIPO_SALIDA, fin_dt)):
+                if momento < esperado + timedelta(minutes=margen_min):
+                    continue  # todavia esta dentro del plazo
+                if not mias.empty:
+                    del_tipo = mias[mias["tipo"] == tipo]["fecha_hora"]
+                    if any(abs((pd.Timestamp(c).to_pydatetime() - esperado).total_seconds()) <= ventana_min * 60
+                           for c in del_tipo):
+                        continue  # ya marco (aunque sea a destiempo)
+                out.append({
+                    "empleado_id": eid,
+                    "nombre": e.nombre,
+                    "sede": hor.sede,
+                    "tipo": tipo,
+                    "esperado": esperado,
+                    "horario": hor.texto(),
+                    "atraso_min": int((momento - esperado).total_seconds() // 60),
+                })
+    return sorted(out, key=lambda d: (d["esperado"], d["nombre"]))
+
+
 def dias_vacaciones(desde: date, hasta: date, empleado_id: int | None = None) -> dict[int, int]:
     """{empleado_id: cuantos dias de vacaciones tiene programados en el rango}."""
     q = (

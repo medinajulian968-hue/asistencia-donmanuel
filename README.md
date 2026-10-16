@@ -97,6 +97,18 @@ almuerzo le quedaría contado como trabajado.
 El detalle por día muestra además *Sobre horario* (lo trabajado por encima del
 horario de ese día) como referencia; no es la cifra oficial de extras.
 
+## Sin marcar (revisión diaria)
+
+La página **⚠️ Sin marcar** (requiere contraseña) lista a quienes ya debían haber
+marcado y no lo hicieron. Se espera un margen configurable después de la hora
+(60 min por defecto): a quien entraba a las 7:00 se le reporta a las 8:00.
+
+- No reporta a quien está de vacaciones o tiene el día libre.
+- Quien marcó tarde **no** aparece (sí marcó); su hora se corrige en *Marcaciones*.
+- En turno partido revisa cada bloque por separado.
+- Marcando la casilla **Registrar** se les crea la marcación a su hora
+  programada, con nota de que la agregó administración. Sirve para varios a la vez.
+
 ## Reporte
 
 **Reporte de extras** (requiere contraseña de administrador): elige **Semana**
