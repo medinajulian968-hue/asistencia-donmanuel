@@ -325,21 +325,17 @@ def mostrar_resumen_hoy(emp_id: int, nombre: str, fecha: date, hor):
     marcas = [(m["tipo"], m["fecha_hora"]) for m in db.registros_del_dia(emp_id, fecha)]
     r = db.resumir_dia(emp_id, nombre, fecha, marcas, hor, db.tolerancia_min(), db.contar_entrada_anticipada(),
                        db.gracia_salida_min())
+    # Se muestra el tiempo YA CONTADO (no el de permanencia) para que las cifras
+    # cuadren entre si sin tener que explicar la gabela: trabajado - jornada = extra.
     partes = []
+    if r.minutos_trabajados:
+        bloques = f" en {r.bloques} bloques" if r.bloques > 1 else ""
+        partes.append(f"🕒 Trabajado hoy: **{fmt_hm(r.minutos_trabajados)}**{bloques}"
+                      + (f" de **{fmt_hm(r.jornada_min)}**" if r.jornada_min else ""))
+    if r.extra_total_min:
+        partes.append(f"➕ Horas extra de hoy: **{fmt_hm(r.extra_total_min)}**")
     if r.tardanza_min:
         partes.append(f"⏰ Llegada tarde: **{fmt_hm(r.tardanza_min)}**")
-    gracia = db.gracia_salida_min()
-    if r.minutos_presencia:
-        bloques = f" en {r.bloques} bloques" if r.bloques > 1 else ""
-        partes.append(f"🕒 Estuviste **{fmt_hm(r.minutos_presencia)}**{bloques}"
-                      + (f" · jornada **{fmt_hm(r.jornada_min)}**" if r.jornada_min else ""))
-    if r.extra_total_min:
-        detalle = f" (ya descontados los {gracia} min de gabela)" if gracia else ""
-        partes.append(f"➕ Extra de hoy: **{fmt_hm(r.extra_total_min)}**{detalle}")
-    elif r.jornada_min and gracia and r.minutos_presencia > r.jornada_min:
-        de_mas = r.minutos_presencia - r.jornada_min
-        partes.append(f"➕ Extra de hoy: **0** — te quedaste {fmt_hm(de_mas)} de más, "
-                      f"dentro de los {gracia} min de gabela")
     # Los demas avisos (sin salida, salida anticipada, faltó marcar el descanso)
     # estan pensados para un dia ya cerrado: a media jornada confunden al que
     # acaba de marcar. Quedan en el reporte, que es donde se revisan.
@@ -404,7 +400,7 @@ def pagina_reporte():
         f"(base {db.horas_semana_legal():g} h/semana = {db.horas_mes_legal():g} h/mes, ajustable en Configuración; "
         f"cada día de vacaciones la baja en {fmt_hm(db.minutos_jornada_dia())}). "
         "Extra = horas trabajadas en el período − jornada legal. "
-        f"Los primeros {db.gracia_salida_min()} min después de la salida programada son parte del turno."
+        f"Los primeros {db.gracia_salida_min()} min por encima de la jornada no cuentan (una sola vez al día)."
     )
 
     resumen = db.reporte_extras(desde, hasta, emp_id, sede_f)

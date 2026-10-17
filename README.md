@@ -129,9 +129,14 @@ En **Administración → Marcaciones**:
 - **Agregar marcación manual** (para quien olvidó marcar) propone sola la hora
   que le correspondía según su horario de ese día.
 
-Lo que cada uno ve al marcar: el tiempo que estuvo, su jornada y las horas extra
-**ya con la gabela descontada**. Si se quedó de más pero dentro de la gabela, se
-lo dice explícitamente para que no quede con la duda.
+## Lo que ve el empleado al marcar
+
+A propósito se le muestra lo mínimo y en cifras que cuadran entre sí: el tiempo
+**ya contado** (con la gabela descontada), su jornada y, si aplica, las horas
+extra y la llegada tarde. No se le menciona la gabela ni se le dan avisos de
+cuadre de horas: eso genera preguntas y discusiones sin aportarle nada. Los
+avisos de salida anticipada, marcaciones faltantes y descansos sin marcar quedan
+en el **reporte** y en **Sin marcar**, que es donde administración los revisa.
 
 ## Limpieza de fotos
 
