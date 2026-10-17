@@ -117,6 +117,11 @@ legal, extra, faltante, tardanzas), horas por semana, detalle por día, fotos de
 cada marcación y descarga a Excel (resumen por día, liquidación del período,
 marcaciones).
 
+El detalle por día y el Excel traen **todas las marcaciones de cada día**, no
+solo la primera y la última: en turno partido salen las cuatro
+(`Entrada 1 / Salida 1 / Entrada 2 / Salida 2`, más una columna con todo junto:
+`08:02–12:05 y 14:00–17:35`).
+
 ## Correcciones
 
 En **Administración → Marcaciones**:

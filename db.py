@@ -801,8 +801,9 @@ class ResumenDia:
     horario_txt: str
     sede: str
     jornada_min: int
-    entrada_real: datetime | None
-    salida_real: datetime | None
+    entrada_real: datetime | None   # primera entrada del dia
+    salida_real: datetime | None    # ultima salida del dia
+    pares: list                     # [(entrada, salida)] de cada bloque trabajado
     bloques: int
     minutos_presencia: int   # tiempo real entre entrada y salida (sin descontar gabela)
     minutos_trabajados: int  # lo que cuenta para la jornada (ya con la gabela descontada)
@@ -948,6 +949,7 @@ def resumir_dia(
         jornada_min=jornada,
         entrada_real=entrada_real,
         salida_real=salida_real,
+        pares=list(bloques),
         bloques=len(bloques),
         minutos_presencia=sum(_minutos(s_ - e) for e, s_ in bloques),
         minutos_trabajados=trabajados,
@@ -1087,6 +1089,20 @@ def fmt_semana(minutos, legal_semana_min: int, tolerancia: int) -> str:
     return fmt_hm(minutos)
 
 
+def fmt_pares(pares) -> str:
+    """[(8:02, 12:05), (14:00, 17:35)] -> '08:02–12:05 y 14:00–17:35'"""
+    if not isinstance(pares, (list, tuple)) or not pares:
+        return ""
+    return " y ".join(f"{e:%H:%M}–{s_:%H:%M}" for e, s_ in pares)
+
+
+def hora_par(pares, i: int, cual: int) -> str:
+    """Hora del bloque `i` (0 = primero): cual=0 entrada, cual=1 salida."""
+    if not isinstance(pares, (list, tuple)) or len(pares) <= i:
+        return ""
+    return f"{pares[i][cual]:%H:%M}"
+
+
 def fmt_hm(minutos) -> str:
     """90 -> '1h 30m'"""
     if minutos is None or pd.isna(minutos):
@@ -1106,18 +1122,26 @@ def exportar_excel(df_resumen: pd.DataFrame, df_registros: pd.DataFrame,
             res = df_resumen.copy()
             res["horas_trabajadas"] = (res["minutos_trabajados"] / 60).round(2)
             res["horas_extra"] = (res["extra_total_min"] / 60).round(2)
-            for c in ("entrada_real", "salida_real"):
-                res[c] = pd.to_datetime(res[c]).dt.strftime("%H:%M").fillna("")
+            # Cada bloque con su entrada y su salida (turno partido = 2 bloques).
+            # Antes solo salian la primera entrada y la ultima salida, de modo
+            # que en turno partido se perdian la salida al descanso y el regreso.
+            for i in (0, 1):
+                res[f"entrada{i + 1}"] = res["pares"].map(lambda p, i=i: hora_par(p, i, 0))
+                res[f"salida{i + 1}"] = res["pares"].map(lambda p, i=i: hora_par(p, i, 1))
+            res["marcaciones"] = res["pares"].map(fmt_pares)
             res["horas_jornada"] = (res["jornada_min"] / 60).round(2)
             cols = [
                 "nombre", "fecha", "dia", "sede", "horario_txt", "horas_jornada",
-                "entrada_real", "salida_real", "bloques", "horas_trabajadas", "tardanza_min",
+                "entrada1", "salida1", "entrada2", "salida2", "marcaciones",
+                "bloques", "horas_trabajadas", "tardanza_min",
                 "faltante_min", "extra_total_min", "horas_extra", "observacion",
             ]
             res[cols].rename(columns={
                 "nombre": "Empleado", "fecha": "Fecha", "dia": "Día",
                 "sede": "Sede", "horario_txt": "Horario programado",
-                "entrada_real": "Entrada real", "salida_real": "Salida real",
+                "entrada1": "Entrada 1", "salida1": "Salida 1",
+                "entrada2": "Entrada 2", "salida2": "Salida 2",
+                "marcaciones": "Marcaciones del día",
                 "horas_trabajadas": "Horas trabajadas", "tardanza_min": "Tardanza (min)",
                 "horas_jornada": "Jornada (h)", "bloques": "Bloques", "faltante_min": "Faltante (min)",
                 "extra_total_min": "Sobre horario (min)", "horas_extra": "Sobre horario (h)", "observacion": "Observación",
