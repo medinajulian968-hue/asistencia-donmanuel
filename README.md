@@ -38,11 +38,14 @@ jornada diaria, así no aparece como faltante.
 
 ## Horario semanal (para los empleados)
 
-- En **Registrar**, al elegir su nombre, cada uno ve **Mi horario de esta semana**
-  (y la próxima).
-- La página **Horario semanal** muestra el cuadro completo de todos, por semana,
-  con filtro por sede (cada tienda ve a su gente; los días en otra sede salen
-  entre paréntesis).
+- En **Registrar**, apenas eligen su nombre (sin escribir la clave) aparece
+  **📅 Mi horario**, con un selector *Esta semana / Próxima semana*. Cuando la
+  próxima ya está programada, el título lo anuncia y el panel se abre solo, para
+  que la vean sin buscarla. Si aún no está programada, lo dice en vez de hacer
+  pasar el horario base por definitivo.
+- La página **Horario semanal** muestra el cuadro de todos con botones
+  *Esta semana / Próxima semana / Otra fecha* y filtro por sede (cada tienda ve a
+  su gente; los días en otra sede salen entre paréntesis).
 
 ## Registro diario
 

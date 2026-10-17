@@ -213,6 +213,23 @@ def pagina_registrar():
     )
     st.write("")
 
+    prox_lunes = lunes + timedelta(days=7)
+    prox_turnos = db.turnos_rango(prox_lunes, prox_lunes + timedelta(days=6), emp_id)
+    aviso = " — ¡ya está la próxima semana!" if prox_turnos else ""
+
+    with st.expander(f"📅 Mi horario{aviso}", expanded=bool(prox_turnos)):
+        cual = st.radio("Semana", ["Esta semana", "Próxima semana"], horizontal=True,
+                        label_visibility="collapsed", key=f"sem_cual_{emp_id}")
+        if cual == "Esta semana":
+            st.caption(f"Del {lunes:%d/%m} al {lunes + timedelta(days=6):%d/%m}")
+            tabla_semana(semana, hoy)
+        else:
+            st.caption(f"Del {prox_lunes:%d/%m} al {prox_lunes + timedelta(days=6):%d/%m}")
+            tabla_semana(db.semana_empleado(emp_id, prox_lunes, plantilla, prox_turnos, sede_base), hoy)
+            if not prox_turnos:
+                st.info("La próxima semana todavía no está programada. Mientras tanto se muestra "
+                        "tu horario de siempre, que puede cambiar.")
+
     # --- Tipo de marcación --------------------------------------------
     sugerido = db.tipo_sugerido(emp_id, ahora)
     tipo = st.radio(
@@ -288,13 +305,6 @@ def pagina_registrar():
         st.success(f"✅ {tipo_ok.capitalize()} registrada a las **{momento_ok.strftime('%H:%M:%S')}**")
         mostrar_resumen_hoy(emp_id, nombre, momento_ok.date(), hor_hoy)
         mostrar_foto(ruta_ok, width=220)
-
-    # --- Mi horario de la semana -----------------------------------------
-    with st.expander("📅 Mi horario de esta semana", expanded=False):
-        tabla_semana(semana, hoy)
-        prox = st.checkbox("Ver la próxima semana", key="ver_prox")
-        if prox:
-            tabla_semana(db.semana_empleado(emp_id, lunes + timedelta(days=7), plantilla, sede_defecto=sede_base), hoy)
 
     # --- Marcaciones de hoy ---------------------------------------------
     marcas_hoy = db.registros_del_dia(emp_id, hoy)
@@ -502,9 +512,14 @@ def pagina_reporte():
 def pagina_horarios():
     st.title("Horario semanal")
     hoy = db.ahora().date()
-    c1, c2 = st.columns(2)
-    ref = c1.date_input("Semana del", value=db.lunes_de(hoy), format="DD/MM/YYYY", key="pub_sem")
+    c1, c2 = st.columns([1.6, 1])
+    cual = c1.radio("Semana", ["Esta semana", "Próxima semana", "Otra fecha"], horizontal=True,
+                    label_visibility="collapsed", key="pub_cual")
     sede_sel = c2.selectbox("Sede", ["Todas"] + sedes_activas(), key="pub_sede")
+    if cual == "Otra fecha":
+        ref = st.date_input("Semana del", value=db.lunes_de(hoy), format="DD/MM/YYYY", key="pub_sem")
+    else:
+        ref = hoy if cual == "Esta semana" else hoy + timedelta(days=7)
     lunes = db.lunes_de(ref)
     st.caption(f"Semana del {lunes:%d/%m/%Y} al {lunes + timedelta(days=6):%d/%m/%Y}"
                + (f" · {sede_sel}" if sede_sel != "Todas" else ""))
@@ -975,7 +990,7 @@ def admin_semana():
     st.caption(
         "Programa aquí los turnos de una semana concreta cuando difieren del horario base "
         "(turnos partidos, cambios de día libre, etc.). Los días que no programes siguen el horario base. "
-        "Los empleados ven esta programación en *Registrar → Mi horario de esta semana*."
+        "Los empleados la ven en *Registrar → Mi horario* y en la página *Horario semanal*."
     )
     c1, c2 = st.columns([1, 2])
     ref = c1.date_input("Semana del", value=db.lunes_de(db.ahora().date()), format="DD/MM/YYYY", key="sem_fecha")
