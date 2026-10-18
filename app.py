@@ -561,8 +561,14 @@ def pagina_pendientes():
 
     # Para un día ya pasado se revisa el día completo, no solo hasta la hora actual
     momento = ahora if fecha >= hoy else datetime.combine(fecha, time(23, 59))
-    pend = db.pendientes_de_marcar(fecha, momento, int(margen),
-                                   None if sede_sel == "Todas" else sede_sel)
+    try:
+        pend = db.pendientes_de_marcar(fecha, momento, int(margen),
+                                       None if sede_sel == "Todas" else sede_sel)
+    except Exception as e:
+        # st.error no se censura en Streamlit Cloud: asi se ve la causa real
+        st.error(f"No se pudo armar la lista. Error: **{type(e).__name__}: {e}**")
+        st.caption("Mándale este mensaje a quien administra la app.")
+        return
 
     if not pend:
         st.success(f"✅ Nadie pendiente. Todos los que debían marcar hasta ahora el "

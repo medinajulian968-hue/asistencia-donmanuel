@@ -555,29 +555,47 @@ def pendientes_de_marcar(fecha: date, momento: datetime | None = None, margen_mi
     turnos = turnos_rango(fecha, fecha)
     regs = listar_registros(fecha, fecha)
     out = []
+    def _ya_marco(serie, esperado) -> bool:
+        """True si hay una marcacion cerca de la hora esperada (ignora vacias)."""
+        for c in serie:
+            if c is None or pd.isna(c):
+                continue
+            try:
+                m = pd.Timestamp(c).to_pydatetime()
+            except (TypeError, ValueError):
+                continue
+            if abs((m - esperado).total_seconds()) <= ventana_min * 60:
+                return True
+        return False
+
     for e in emps.itertuples():
         eid = int(e.id)
-        hor = horario_del_dia(eid, fecha, horario_empleado(eid), turnos, e.sede or "")
+        sede_emp = (getattr(e, "sede", "") or "")
+        nombre_emp = str(getattr(e, "nombre", "") or f"#{eid}")
+        hor = horario_del_dia(eid, fecha, horario_empleado(eid), turnos, sede_emp)
         if hor is None or hor.vacaciones or not hor.bloques:
             continue
         if sede and hor.sede != sede:
             continue
         mias = regs[regs["empleado_id"] == eid] if not regs.empty else regs
-        for ini, fin in hor.bloques:
+        for bloque in hor.bloques:
+            try:
+                ini, fin = bloque
+            except (TypeError, ValueError):
+                continue
+            if ini is None or fin is None:
+                continue
             fin_dt = datetime.combine(fecha, fin)
             if fin <= ini:
                 fin_dt += timedelta(days=1)
             for tipo, esperado in ((TIPO_ENTRADA, datetime.combine(fecha, ini)), (TIPO_SALIDA, fin_dt)):
                 if momento < esperado + timedelta(minutes=margen_min):
                     continue  # todavia esta dentro del plazo
-                if not mias.empty:
-                    del_tipo = mias[mias["tipo"] == tipo]["fecha_hora"]
-                    if any(abs((pd.Timestamp(c).to_pydatetime() - esperado).total_seconds()) <= ventana_min * 60
-                           for c in del_tipo):
-                        continue  # ya marco (aunque sea a destiempo)
+                if not mias.empty and _ya_marco(mias[mias["tipo"] == tipo]["fecha_hora"], esperado):
+                    continue  # ya marco (aunque sea a destiempo)
                 out.append({
                     "empleado_id": eid,
-                    "nombre": e.nombre,
+                    "nombre": nombre_emp,
                     "sede": hor.sede,
                     "tipo": tipo,
                     "esperado": esperado,
