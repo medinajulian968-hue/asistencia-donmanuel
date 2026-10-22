@@ -115,6 +115,36 @@ def sedes_activas() -> list[str]:
     return db.listar_sedes()
 
 
+# Streamlit vuelve a ejecutar todo el script con cada tecla y cada clic. Sin
+# cache, cada persona disparaba ~8 consultas a la base por interaccion, y a las
+# 7:00 am con todos marcando a la vez la app se quedaba cargando. Lo que no
+# cambia de un minuto a otro se consulta una vez y se reparte entre todos.
+@st.cache_data(ttl=60, show_spinner=False)
+def empleados_activos():
+    return db.listar_empleados(solo_activos=True)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def plantilla_emp(emp_id: int):
+    return db.horario_empleado(emp_id)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def turnos_emp(emp_id: int, lunes: date):
+    return db.turnos_rango(lunes, lunes + timedelta(days=6), emp_id)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cuadro_semana(lunes: date, sede: str | None):
+    return db.semana_todos(lunes, sede)
+
+
+def limpiar_cache_datos():
+    """Tras cambiar empleados, sedes u horarios, que todos vean lo nuevo ya."""
+    for f in (sedes_activas, empleados_activos, plantilla_emp, turnos_emp, cuadro_semana):
+        f.clear()
+
+
 def opciones_sede(actual: str = "") -> list[str]:
     """Lista de sedes para selectores; incluye la actual aunque este inactiva."""
     ops = sedes_activas()
@@ -160,7 +190,7 @@ def pedir_admin() -> bool:
 def pagina_registrar():
     st.title("Registro de entrada y salida")
 
-    empleados = db.listar_empleados(solo_activos=True)
+    empleados = empleados_activos()
     if empleados.empty:
         st.warning("Todavía no hay empleados registrados. Pide al administrador que los cree en **Administración**.")
         return
@@ -183,10 +213,11 @@ def pagina_registrar():
         st.session_state.pop("foto_id", None)
 
     # --- Estado de hoy -------------------------------------------------
-    plantilla = db.horario_empleado(emp_id)
+    plantilla = plantilla_emp(emp_id)
     sede_base = emp["sede"] or ""
     lunes = db.lunes_de(hoy)
-    semana = db.semana_empleado(emp_id, lunes, plantilla, sede_defecto=sede_base)
+    turnos_sem = turnos_emp(emp_id, lunes)
+    semana = db.semana_empleado(emp_id, lunes, plantilla, turnos_sem, sede_base)
     hor_hoy = dict(semana).get(hoy)
     marcas_hoy = db.registros_del_dia(emp_id, hoy)
     sede_hoy = (hor_hoy.sede if hor_hoy else "") or sede_base
@@ -214,7 +245,7 @@ def pagina_registrar():
     st.write("")
 
     prox_lunes = lunes + timedelta(days=7)
-    prox_turnos = db.turnos_rango(prox_lunes, prox_lunes + timedelta(days=6), emp_id)
+    prox_turnos = turnos_emp(emp_id, prox_lunes)
     aviso = " — ¡ya está la próxima semana!" if prox_turnos else ""
 
     with st.expander(f"📅 Mi horario{aviso}", expanded=bool(prox_turnos)):
@@ -307,7 +338,8 @@ def pagina_registrar():
         mostrar_foto(ruta_ok, width=220)
 
     # --- Marcaciones de hoy ---------------------------------------------
-    marcas_hoy = db.registros_del_dia(emp_id, hoy)
+    # Se reutiliza lo ya consultado arriba: tras marcar hay un rerun completo,
+    # asi que la lista siempre llega fresca sin repetir la consulta.
     if marcas_hoy:
         with st.expander("Ver mis marcaciones de hoy", expanded=False):
             for m in marcas_hoy:
@@ -523,7 +555,7 @@ def pagina_horarios():
     lunes = db.lunes_de(ref)
     st.caption(f"Semana del {lunes:%d/%m/%Y} al {lunes + timedelta(days=6):%d/%m/%Y}"
                + (f" · {sede_sel}" if sede_sel != "Todas" else ""))
-    tabla = db.semana_todos(lunes, None if sede_sel == "Todas" else sede_sel)
+    tabla = cuadro_semana(lunes, None if sede_sel == "Todas" else sede_sel)
     if tabla.empty:
         st.info("Nadie programado en esa sede esa semana." if sede_sel != "Todas" else "Todavía no hay empleados.")
     else:
@@ -532,12 +564,14 @@ def pagina_horarios():
             st.caption("Entre paréntesis: días en otra sede.")
 
     st.subheader("Ver el mío")
-    emps = db.listar_empleados()
+    emps = empleados_activos()
     nombre = st.selectbox("Empleado", emps["nombre"].tolist(), index=None, placeholder="Elige tu nombre",
                           key="pub_emp")
     if nombre:
-        emp_id = int(emps.set_index("nombre").loc[nombre, "id"])
-        tabla_semana(db.semana_empleado(emp_id, lunes), hoy)
+        fila = emps.set_index("nombre").loc[nombre]
+        emp_id = int(fila["id"])
+        tabla_semana(db.semana_empleado(emp_id, lunes, plantilla_emp(emp_id), turnos_emp(emp_id, lunes),
+                                        fila["sede"] or ""), hoy)
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +687,7 @@ def admin_sedes():
         if c2.form_submit_button("Agregar", width="stretch"):
             try:
                 db.crear_sede(nombre)
-                sedes_activas.clear()
+                limpiar_cache_datos()
                 st.success(f"Sede **{nombre.strip()}** agregada.")
                 st.rerun()
             except ValueError as e:
@@ -670,7 +704,7 @@ def admin_sedes():
         c1.markdown(f"**{nombre}**" + ("" if act else " (inactiva)"))
         if c2.button("Desactivar" if act else "Activar", key=f"sede_{nombre}", width="stretch"):
             db.activar_sede(nombre, not act)
-            sedes_activas.clear()
+            limpiar_cache_datos()
             st.rerun()
 
 
@@ -688,6 +722,7 @@ def admin_empleados():
                 if len(pin.strip()) < 4:
                     raise ValueError("La clave es obligatoria y debe tener al menos 4 caracteres.")
                 db.crear_empleado(nombre, cargo, pin, sede)
+                limpiar_cache_datos()
                 st.success(f"Empleado **{nombre.strip()}** creado. Ahora asígnale un horario en la pestaña *Horarios*.")
             except ValueError as e:
                 st.error(str(e))
@@ -722,6 +757,7 @@ def admin_empleados():
                         st.error("La clave debe tener al menos 4 caracteres.")
                         st.stop()
                     db.actualizar_empleado(int(r.id), n, c, p, a, sd)
+                    limpiar_cache_datos()
                     st.success("Guardado.")
                     st.rerun()
                 if b2.form_submit_button("Eliminar definitivamente", width="stretch"):
@@ -732,6 +768,7 @@ def admin_empleados():
                 k1, k2 = st.columns(2)
                 if k1.button("Sí, eliminar", key=f"del_si_{r.id}", type="primary", width="stretch"):
                     db.eliminar_empleado(int(r.id))
+                    limpiar_cache_datos()
                     st.session_state.pop(f"confirmar_del_{r.id}", None)
                     st.rerun()
                 if k2.button("Cancelar", key=f"del_no_{r.id}", width="stretch"):
@@ -965,6 +1002,7 @@ def admin_horarios():
         origen = c4.selectbox("Copiar horario base de", otros, index=None, placeholder="Elige empleado")
         if c5.button("Copiar", width="stretch", disabled=origen is None):
             db.copiar_horario(nombres[origen], emp_id)
+            limpiar_cache_datos()
             st.session_state.pop(f"prefill_hor_{emp_id}", None)
             st.session_state[f"ver_hor_{emp_id}"] = ver + 1
             st.success("Horario copiado.")
@@ -974,6 +1012,7 @@ def admin_horarios():
     if st.button("Guardar horario base", type="primary", width="stretch", key=f"g_hor_{emp_id}"):
         nuevos = {d: _horario_de_editor(editado.iloc[d]) for d in range(7)}
         db.guardar_horario(emp_id, nuevos)
+        limpiar_cache_datos()
         st.session_state.pop(f"prefill_hor_{emp_id}", None)
         st.session_state[f"ver_hor_{emp_id}"] = ver + 1
         st.success(f"Horario base de {sel} guardado.")
@@ -1069,6 +1108,7 @@ def admin_semana():
     if b2.button("Volver al horario base (borrar programación)", width="stretch", key=f"rm_{clave}",
                  disabled=not programada):
         db.borrar_semana(emp_id, lunes)
+        limpiar_cache_datos()
         st.session_state.pop(f"prefill_sem_{clave}", None)
         st.session_state[f"ver_sem_{clave}"] = ver + 1
         st.success("Programación de la semana eliminada.")
@@ -1078,6 +1118,7 @@ def admin_semana():
     if st.button("Guardar programación de la semana", type="primary", width="stretch", key=f"g_sem_{clave}"):
         nuevos = {lunes + timedelta(days=i): _horario_de_editor(editado.iloc[i]) for i in range(7)}
         db.guardar_semana(emp_id, lunes, nuevos)
+        limpiar_cache_datos()
         st.session_state.pop(f"prefill_sem_{clave}", None)
         st.session_state[f"ver_sem_{clave}"] = ver + 1
         st.success(f"Semana del {lunes:%d/%m} programada para {sel}.")
@@ -1225,6 +1266,7 @@ def admin_importar():
                 st.error("Contraseña incorrecta. No se cargó nada.")
             else:
                 n = db.guardar_turnos(turnos)
+                limpiar_cache_datos()
                 st.success(f"Listo: se cargaron {n} días. Revísalos en *Programar semana*.")
 
 
