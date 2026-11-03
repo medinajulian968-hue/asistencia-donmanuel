@@ -120,6 +120,10 @@ legal, extra, faltante, tardanzas), horas por semana, detalle por día, fotos de
 cada marcación y descarga a Excel (resumen por día, liquidación del período,
 marcaciones).
 
+> Las consultas se piden **paginadas**: Supabase devuelve como máximo 1000 filas
+> por petición y no avisa cuando corta. Sin paginar, el reporte de un mes con
+> muchas marcaciones perdía los últimos días en silencio y las horas salían mal.
+
 El detalle por día y el Excel traen **todas las marcaciones de cada día**, no
 solo la primera y la última: en turno partido salen las cuatro
 (`Entrada 1 / Salida 1 / Entrada 2 / Salida 2`, más una columna con todo junto:

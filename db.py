@@ -114,6 +114,30 @@ def inicializar() -> None:
 # UTILIDADES DE CONVERSION
 # ---------------------------------------------------------------------------
 
+FILAS_POR_PAGINA = 1000
+
+
+def _traer_paginado(construir_query, pagina: int = FILAS_POR_PAGINA) -> list[dict]:
+    """
+    Trae TODAS las filas de una consulta.
+
+    Supabase (PostgREST) devuelve como maximo 1000 filas por peticion y no avisa
+    cuando corta: sin paginar, el reporte de un mes con muchas marcaciones se
+    quedaba sin los ultimos dias y las horas salian mal.
+
+    `construir_query` debe devolver una consulta NUEVA en cada llamada, porque
+    la consulta se consume al ejecutarla.
+    """
+    filas: list[dict] = []
+    inicio = 0
+    while True:
+        lote = construir_query().range(inicio, inicio + pagina - 1).execute().data
+        filas.extend(lote)
+        if len(lote) < pagina:
+            return filas
+        inicio += pagina
+
+
 def _parse_dt(txt: str) -> datetime:
     return datetime.fromisoformat(txt).replace(tzinfo=None)
 
@@ -402,14 +426,17 @@ def turnos_rango(desde: date, hasta: date, empleado_id: int | None = None) -> di
     Turnos programados por fecha: {(empleado_id, fecha): Horario} o None si ese
     dia se marco explicitamente como libre.
     """
-    q = (
-        cliente().table("turnos").select("*")
-        .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
-    )
-    if empleado_id is not None:
-        q = q.eq("empleado_id", empleado_id)
+    def _q():
+        q = (
+            cliente().table("turnos").select("*")
+            .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
+        )
+        if empleado_id is not None:
+            q = q.eq("empleado_id", empleado_id)
+        return q.order("fecha")
+
     out = {}
-    for f in q.execute().data:
+    for f in _traer_paginado(_q):
         if (f.get("estado") or "") == ESTADO_VACACIONES:
             h = Horario([], "turno", (f.get("sede") or "").strip(), ESTADO_VACACIONES)
         else:
@@ -607,15 +634,18 @@ def pendientes_de_marcar(fecha: date, momento: datetime | None = None, margen_mi
 
 def dias_vacaciones(desde: date, hasta: date, empleado_id: int | None = None) -> dict[int, int]:
     """{empleado_id: cuantos dias de vacaciones tiene programados en el rango}."""
-    q = (
-        cliente().table("turnos").select("empleado_id,fecha,estado")
-        .eq("estado", ESTADO_VACACIONES)
-        .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
-    )
-    if empleado_id is not None:
-        q = q.eq("empleado_id", empleado_id)
+    def _q():
+        q = (
+            cliente().table("turnos").select("empleado_id,fecha,estado")
+            .eq("estado", ESTADO_VACACIONES)
+            .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
+        )
+        if empleado_id is not None:
+            q = q.eq("empleado_id", empleado_id)
+        return q.order("fecha")
+
     out: dict[int, int] = {}
-    for f in q.execute().data:
+    for f in _traer_paginado(_q):
         out[int(f["empleado_id"])] = out.get(int(f["empleado_id"]), 0) + 1
     return out
 
@@ -782,14 +812,17 @@ COLS_REGISTRO = ["id", "empleado_id", "nombre", "tipo", "fecha", "fecha_hora", "
 
 
 def listar_registros(desde: date, hasta: date, empleado_id: int | None = None) -> pd.DataFrame:
-    q = (
-        cliente().table("registros")
-        .select("id,empleado_id,tipo,fecha,fecha_hora,foto,nota,sede,empleados(nombre)")
-        .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
-    )
-    if empleado_id is not None:
-        q = q.eq("empleado_id", empleado_id)
-    data = q.order("fecha_hora").execute().data
+    def _q():
+        q = (
+            cliente().table("registros")
+            .select("id,empleado_id,tipo,fecha,fecha_hora,foto,nota,sede,empleados(nombre)")
+            .gte("fecha", desde.strftime("%Y-%m-%d")).lte("fecha", hasta.strftime("%Y-%m-%d"))
+        )
+        if empleado_id is not None:
+            q = q.eq("empleado_id", empleado_id)
+        return q.order("fecha_hora")
+
+    data = _traer_paginado(_q)
     filas = []
     for f in data:
         f = dict(f)
