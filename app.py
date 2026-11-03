@@ -1510,7 +1510,7 @@ with st.sidebar:
     st.markdown("### Mercados Don Manuel")
     st.caption("Control de asistencia")
     st.caption("Registra tu entrada y salida con foto.")
-    st.caption(f"v{VERSION}")
+    st.caption(f"app v{VERSION} · datos v{getattr(db, 'VERSION_DB', '???')}")
 
 pg = st.navigation([
     st.Page(pagina_registrar, title="Registrar", icon="📸", default=True, url_path="registrar"),

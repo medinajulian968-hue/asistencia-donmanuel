@@ -36,6 +36,11 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from supabase import Client, create_client
 
+# Version de ESTE archivo. Se muestra en el panel lateral: si no coincide con lo
+# esperado, Streamlit se quedo con una copia vieja de db.py en memoria y hay que
+# reiniciar la app de verdad (no basta con refrescar el navegador).
+VERSION_DB = "2026.11.03-paginacion"
+
 DIAS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 DIAS_CORTO = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 

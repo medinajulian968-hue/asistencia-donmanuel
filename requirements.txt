@@ -6,3 +6,7 @@ pandas==3.0.5
 pillow==12.3.0
 openpyxl==3.1.5
 supabase==2.31.0
+
+# Tocar este archivo obliga a Streamlit Cloud a reconstruir el entorno y
+# reiniciar el proceso por completo. Sin eso puede seguir usando una copia
+# vieja de db.py en memoria aunque app.py ya se haya actualizado.
