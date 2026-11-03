@@ -41,6 +41,10 @@ except Exception as e:  # sin internet, credenciales malas, tablas no creadas...
     st.exception(e)
     st.stop()
 
+# Se muestra en el panel lateral: sirve para saber de un vistazo si Streamlit
+# ya tomo el ultimo cambio, sin tener que adivinar.
+VERSION = "2026.11.03-paginacion"
+
 COLOR_ENTRADA = "#059669"
 COLOR_SALIDA = "#dc2626"
 
@@ -1506,6 +1510,7 @@ with st.sidebar:
     st.markdown("### Mercados Don Manuel")
     st.caption("Control de asistencia")
     st.caption("Registra tu entrada y salida con foto.")
+    st.caption(f"v{VERSION}")
 
 pg = st.navigation([
     st.Page(pagina_registrar, title="Registrar", icon="📸", default=True, url_path="registrar"),
